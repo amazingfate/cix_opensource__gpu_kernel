@@ -1,4 +1,4 @@
-#  Copyright 2024 Cix Technology Group Co., Ltd.
+#  Copyright 2022-2025 Cix Technology Group Co., Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,12 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# Description: build GPU kernel module for cix Android product
-# Author: Cunyuan Liu
-# Date: 2023-01-30
-# Revision: original v1.0
-#
 
 KERNEL_SRC := $(CIX_KERNEL_PATH)/kernel
 KERNEL_OUT := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ
@@ -50,7 +44,6 @@ $(GPU_KERNELENVSH):
 	echo 'export KDIR=$(KERNEL_OUT)' >> $(GPU_KERNELENVSH)
 	echo 'export CROSS_COMPILE=$(GPU_CROSS_COMPILE)' >> $(GPU_KERNELENVSH)
 	echo 'export ARCH=$(ARCH)' >> $(GPU_KERNELENVSH)
-																						   
 
 gpu: $(GPU_KERNELENVSH) $(GPU_SRC_PATH) $(MGM_SRC_PATH)
 	$(hide) if [ ${clean_build} = 1 ]; then \

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 #
-# (C) COPYRIGHT 2023 ARM Limited. All rights reserved.
+# (C) COPYRIGHT 2023-2025 ARM Limited. All rights reserved.
 #
 # This program is free software and is provided to you under the terms of the
 # GNU General Public License version 2 as published by the Free Software
@@ -19,42 +19,36 @@
 #
 
 load(
-    "//build/kernel/kleaf:kernel.bzl",
-    "kernel_module",
+    "@kleaf//build/kernel/kleaf:kernel.bzl",
+    "ddk_headers",
+    "kernel_module_group",
+)
+load("//common-modules/cix/gpu_kernel:paths.bzl", "GPU_KERNEL_DRIVERS_GPU_ARM_MIDGARD", "GPU_KERNEL_DRIVERS_GPU_ARM_MIDGARD_TESTS", "GPU_KERNEL_CONFIG")
+
+package(
+    default_visibility = [
+        "//:__subpackages__",
+        "@kleaf//common:__pkg__",
+    ],
+)
+
+ddk_headers(
+    name = "mali_arbitration_shared_config_defaults",
+    includes = ["midgard"]
 )
 
 filegroup(
     name = "gpu_kconfig",
-    srcs = glob([
-        "**/*Kconfig",
-    ]),
-    visibility = [
-        "//common:__pkg__",
-        "//common-modules/mali:__subpackages__",
-    ],
+    srcs = [
+        GPU_KERNEL_DRIVERS_GPU_ARM_MIDGARD + ":midgard_kconfig",
+    ]
 )
 
-_gpu_modules = []
-
-kernel_module(
+kernel_module_group(
     name = "gpu",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-        "**/*.S",
-        "**/*Kbuild",
-        "**/*Makefile",
-    ]) + [
-        "//common:kernel_headers",
-        "//common-modules/mali:headers",
-    ],
-    outs = _gpu_modules,
-    kernel_build = "//common:kernel_aarch64",
-    visibility = [
-        "//common:__pkg__",
-        "//common-modules/mali:__subpackages__",
-    ],
-    deps = [
-        "//common-modules/mali/drivers/base/arm:base",
-    ],
+    srcs = [GPU_KERNEL_DRIVERS_GPU_ARM_MIDGARD + ":mali_kbase"] +
+           select({
+               GPU_KERNEL_CONFIG + ":mali_debug_kutf": [GPU_KERNEL_DRIVERS_GPU_ARM_MIDGARD_TESTS + ":mali_kutf_tests"],
+               "//conditions:default": [],
+           }),
 )

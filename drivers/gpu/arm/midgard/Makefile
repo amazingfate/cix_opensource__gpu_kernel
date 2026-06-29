@@ -17,8 +17,11 @@
 # http://www.gnu.org/licenses/gpl-2.0.html.
 #
 #
-
+ifneq ($(KERNELRELEASE),)
+KERNEL_SRC ?= /lib/modules/${KERNELRELEASE}/build
+else
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
+endif
 KDIR ?= $(KERNEL_SRC)
 M ?= $(shell pwd)
 
@@ -41,7 +44,7 @@ ifeq ($(MALI_KCONFIG_EXT_PREFIX),)
         CONFIG_MALI_PLATFORM_NAME ?= "devicetree"
         CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD ?= y
         CONFIG_MALI_GATOR_SUPPORT ?= y
-        CONFIG_MALI_ARBITRATION ?= n
+        CONFIG_MALI_HAS_VIRTUALIZATION ?= n
         CONFIG_MALI_KUTF_PTM_TESTS ?= n
 
 
@@ -145,7 +148,7 @@ ifeq ($(MALI_KCONFIG_EXT_PREFIX),)
         endif
     else
         # Prevent misuse when CONFIG_MALI_MIDGARD=n
-        CONFIG_MALI_ARBITRATION = n
+        CONFIG_MALI_HAS_VIRTUALIZATION = n
         CONFIG_MALI_KUTF = n
         CONFIG_MALI_KUTF_IRQ_TEST = n
         CONFIG_MALI_KUTF_CLK_RATE_TRACE = n
@@ -157,7 +160,7 @@ ifeq ($(MALI_KCONFIG_EXT_PREFIX),)
         CONFIG_MALI_MIDGARD \
         CONFIG_MALI_CSF_SUPPORT \
         CONFIG_MALI_GATOR_SUPPORT \
-        CONFIG_MALI_ARBITRATION \
+        CONFIG_MALI_HAS_VIRTUALIZATION \
         CONFIG_MALI_KUTF_PTM_TESTS \
         CONFIG_MALI_REAL_HW \
         CONFIG_MALI_DEVFREQ \

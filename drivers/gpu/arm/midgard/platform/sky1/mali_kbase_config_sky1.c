@@ -14,6 +14,7 @@
 
 #include "backend/gpu/mali_kbase_clk_rate_trace_mgr.h"
 #include "mali_kbase_config_platform.h"
+#include "mali_kbase_dsm.h"
 #include <linux/acpi.h>
 #include <linux/pm_runtime.h>
 
@@ -28,6 +29,16 @@ struct kbase_platform_config *kbase_get_platform_config(void)
 	return &dummy_platform_config;
 }
 
+#define to_gpu_scmi_pd(pd) container_of(pd, struct gpu_scmi_perf_domain, genpd)
+
+struct gpu_scmi_perf_domain {
+    struct generic_pm_domain genpd;
+    const struct scmi_perf_proto_ops *perf_ops;
+    const struct scmi_protocol_handle *ph;
+    const struct scmi_perf_domain_info *info;
+    u32 domain_id;
+};
+
 #ifndef CONFIG_OF
 int kbase_platform_register(void)
 {
@@ -40,12 +51,7 @@ void kbase_platform_unregister(void)
 #endif
 
 #ifdef CONFIG_MALI_MIDGARD_DVFS
-#if MALI_USE_CSF
 int kbase_platform_dvfs_event(struct kbase_device *kbdev, u32 utilisation)
-#else
-int kbase_platform_dvfs_event(struct kbase_device *kbdev, u32 utilisation, u32 util_gl_share,
-			      u32 util_cl_share[2])
-#endif
 {
 	return 1;
 }
@@ -139,6 +145,11 @@ static int sky1_gpu_attach_pd(struct kbase_device *kbdev)
   	kbdev->sky1_perf_dev = dev_pm_domain_attach_by_name(kbdev->dev, "perf");
 #endif
 
+	if (IS_ERR_OR_NULL(kbdev->sky1_perf_dev)) {
+		dev_err(kbdev->dev, "Failed to attach perf power domain\n");
+		return -ENODEV;
+	}
+
 	link = device_link_add(kbdev->dev, kbdev->sky1_perf_dev,
 				DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME | DL_FLAG_RPM_ACTIVE);
 	if (!link) {
@@ -151,9 +162,15 @@ static int sky1_gpu_attach_pd(struct kbase_device *kbdev)
 		struct fwnode_handle *fwnode = fwnode_find_reference(kbdev->dev->fwnode, "power-supply", 0);
 		if (IS_ERR_OR_NULL(fwnode)) {
 			dev_warn(kbdev->dev, "Failed to get power-supply property, using single power domain.\n");
+			gpu_notify_dsm_event(kbdev, DSM_GPU_PROBE_ERR,
+					 "GPU power-supply reference not found in ACPI table");
 			return 0;
 		}
 		power_dev = bus_find_device_by_fwnode(&platform_bus_type, fwnode);
+		if (!power_dev) {
+			dev_err(kbdev->dev, "Failed to find power-supply device\n");
+			return -ENODEV;
+		}
 		pm_runtime_enable(power_dev);
 		dev_pm_domain_attach(power_dev, true);
 		fwnode_handle_put(fwnode);
@@ -176,11 +193,9 @@ static int sky1_gpu_detach_pd(struct kbase_device *kbdev)
 	dev_info(kbdev->dev, "%s\n", __func__);
 
 #ifdef CONFIG_MALI_DEVFREQ
-	dev_pm_domain_detach(kbdev->sky1_perf_dev, "perf");
+	dev_pm_domain_detach(kbdev->sky1_perf_dev, true);
 #endif
-	if (!has_acpi_companion(kbdev->dev)) {
-		dev_pm_domain_detach(kbdev->sky1_power_dev, "pd_gpu");
-	}
+	dev_pm_domain_detach(kbdev->sky1_power_dev, true);
 
 	return 0;
 }
@@ -189,6 +204,10 @@ static int kbase_platform_sky1_init(struct kbase_device *kbdev)
 {
 	int err = 0;
 	u32 harvesting_reg_val;
+
+#if IS_ENABLED(CONFIG_PLAT_DSM_SYSEVENT)
+	kbdev->dsm_client = gpu_dsm_init();
+#endif
 
 	err = sky1_gpu_attach_pd(kbdev);
 
@@ -245,6 +264,10 @@ static void kbase_platform_sky1_term(struct kbase_device *kbdev)
 		iounmap(kbdev->dynamic_power_addr);
 	sky1_gpu_detach_pd(kbdev);
 
+#if IS_ENABLED(CONFIG_PLAT_DSM_SYSEVENT)
+	gpu_dsm_remove(kbdev->dsm_client);
+#endif
+
 	return ;
 }
 
@@ -275,7 +298,8 @@ static void sky1_power_model_work_handler(struct work_struct *work)
 	if(power > static_power)
 			power -= static_power;
 
-	mali_writel(power, kbdev->dynamic_power_addr);
+	if (kbdev->dynamic_power_addr)
+		mali_writel(power, kbdev->dynamic_power_addr);
 }
 
 static int kbase_platform_sky1_late_init(struct kbase_device *kbdev)
@@ -300,7 +324,8 @@ static int kbase_platform_sky1_late_init(struct kbase_device *kbdev)
 static void kbase_platform_sky1_late_term(struct kbase_device *kbdev)
 {
 	hrtimer_cancel(&kbdev->sky1_power_timer);
-	destroy_workqueue(kbdev->sky1_power_wq);
+	if (kbdev->sky1_power_wq)
+		destroy_workqueue(kbdev->sky1_power_wq);
 }
 
 struct kbase_platform_funcs_conf platform_funcs = {
@@ -326,7 +351,30 @@ void kbase_enable_ls_mem_counter(struct kbase_device *kbdev)
 }
 
 #ifdef CONFIG_MALI_DEVFREQ
-static void sky1_gpu_set_devfreq_table(struct kbase_device *kbdev, int opp_index,
+static int gpu_scmi_device_opp_table_parse(struct device *dev)
+{
+    struct generic_pm_domain *genpd = pd_to_genpd(dev->pm_domain);
+    struct gpu_scmi_perf_domain *pd = to_gpu_scmi_pd(genpd);
+    static const struct scmi_perf_proto_ops *perf_ops;
+    const struct scmi_protocol_handle *ph;
+    int ret;
+
+    perf_ops = pd->perf_ops;
+    ph = pd->ph;
+#if (KERNEL_VERSION(6, 7, 0) <= LINUX_VERSION_CODE) || defined(__ANDROID_COMMON_KERNEL__)
+    ret = perf_ops->device_opps_add(ph, dev, pd->domain_id);
+#else
+    ret = perf_ops->device_opps_add(ph, dev);
+#endif
+    if (ret) {
+        dev_err(dev, "failed to add opps to the device\n");
+        return ret;
+    }
+
+    return 0;
+}
+
+static int sky1_gpu_set_devfreq_table(struct kbase_device *kbdev, int opp_index,
 				unsigned long freq, unsigned long volt) {
 	int j = 0;
 	unsigned int core_count;
@@ -394,7 +442,7 @@ static void sky1_gpu_set_devfreq_table(struct kbase_device *kbdev, int opp_index
 				break;
 			default:
 				WARN(true, "Unknown core count value: %d", core_count);
-				break;
+				return -EINVAL;
 			}
 		/* Configure the core mask based on the maximum available core count
 		 * when enable harvesting.
@@ -406,7 +454,7 @@ static void sky1_gpu_set_devfreq_table(struct kbase_device *kbdev, int opp_index
 				core_bit = ffs(max_available_core_mask);
 				if (!core_bit) {
 					dev_err(kbdev->dev, "OPP has more cores than GPU\n");
-					return;
+					return -EINVAL;
 				}
 				core_mask |= (1ull << (core_bit - 1));
 				max_available_core_mask &= ~(1ull << (core_bit - 1));
@@ -416,7 +464,7 @@ static void sky1_gpu_set_devfreq_table(struct kbase_device *kbdev, int opp_index
 	}
 
 	kbdev->devfreq_table[opp_index].opp_freq = freq;
-	return;
+	return 0;
 }
 
 int sky1_gpu_init_perf_opp_table(struct kbase_device *kbdev, struct devfreq_dev_profile *dp)
@@ -430,7 +478,7 @@ int sky1_gpu_init_perf_opp_table(struct kbase_device *kbdev, struct devfreq_dev_
 	unsigned long lowest_freq_khz = DEFAULT_REF_TIMEOUT_FREQ_KHZ;
 	unsigned long found_lowest_freq = 0;
 
-	err = scmi_device_opp_table_parse(kbdev->sky1_perf_dev);
+	err = gpu_scmi_device_opp_table_parse(kbdev->sky1_perf_dev);
 	if (err) {
 		dev_err(kbdev->dev, "Failed to parse opp table from scmi, err = %d.\n", err);
 		return err;
@@ -463,7 +511,11 @@ int sky1_gpu_init_perf_opp_table(struct kbase_device *kbdev, struct devfreq_dev_
 
 		dev_pm_opp_put(opp);
 
-		sky1_gpu_set_devfreq_table(kbdev, i, freq, volt);
+		err = sky1_gpu_set_devfreq_table(kbdev, i, freq, volt);
+		if (err) {
+			dev_warn(kbdev->dev, "failed to set devfreq table entry %d, skipping\n", i);
+			continue;
+		}
 		dp->freq_table[i] = freq;
 
 		err = dev_pm_opp_add(kbdev->dev, freq, volt);
@@ -472,6 +524,10 @@ int sky1_gpu_init_perf_opp_table(struct kbase_device *kbdev, struct devfreq_dev_
 			while (i-- > 0) {
 				dev_pm_opp_remove(kbdev->dev, dp->freq_table[i]);
 			}
+			kfree(kbdev->devfreq_table);
+			kbdev->devfreq_table = NULL;
+			kfree(dp->freq_table);
+			dp->freq_table = NULL;
 			return err;
 		}
 
@@ -513,5 +569,4 @@ void sky1_remove_opp_table(struct kbase_device *kbdev, struct devfreq_dev_profil
 		dev_pm_opp_remove(kbdev->dev, dp->freq_table[i]);
 	}
 }
-
 #endif

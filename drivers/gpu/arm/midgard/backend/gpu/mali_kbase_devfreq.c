@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2014-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2014-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -40,6 +40,7 @@
 #include <backend/gpu/mali_kbase_clk_rate_trace_mgr.h>
 #include "mali_kbase_devfreq.h"
 #include "mali_kbase_config_platform.h"
+#include "mali_kbase_dsm.h"
 
 static struct devfreq_simple_ondemand_data gpu_devfreq_data;
 
@@ -243,14 +244,13 @@ static int kbase_devfreq_target(struct device *dev, unsigned long *target_freq, 
 
 	for (j = 0; j < PM_CLK_MAX_RETRY_TIMES; j++) {
 		current_gpu_level = ioread32(kbdev->clk_response_addr);
-
 		if (current_gpu_level == nominal_freq_mhz)
 			break;
 		udelay(2);
 	}
 
 	if (current_gpu_level != nominal_freq_mhz) {
-		dev_dbg(dev, "set clock (%lu) is inconsistent with clock read (%lu) from PM\n",
+		gpu_notify_dsm_event(kbdev, DSM_GPU_PM_ERR, "set clock (%lu) is inconsistent with clock read (%lu) from PM",
 					nominal_freq_mhz, current_gpu_level);
 	}
 
@@ -293,7 +293,7 @@ static int kbase_devfreq_status(struct device *dev, struct devfreq_dev_status *s
 	stat->current_frequency = kbdev->current_nominal_freq;
 	stat->private_data = NULL;
 
-#if MALI_USE_CSF && defined CONFIG_DEVFREQ_THERMAL
+#if defined CONFIG_DEVFREQ_THERMAL
 	kbase_ipa_reset_data(kbdev);
 #endif
 
@@ -503,7 +503,6 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 				opp_freq);
 			continue;
 		}
-#if MALI_USE_CSF
 		if (kbase_csf_dev_has_ne(kbdev)) {
 			u64 neural_present = kbdev->gpu_props.neural_present;
 			u64 sc_with_ne = shader_present & neural_present;
@@ -527,7 +526,6 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 				continue;
 			}
 		}
-#endif /* MALI_USE_CSF */
 
 		core_count_p = of_get_property(node, "opp-core-count", NULL);
 		if (core_count_p) {
@@ -698,7 +696,6 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 
 	dp = &kbdev->devfreq_profile;
 
-	dp->initial_freq = kbdev->current_freqs[KBASE_CLOCK_DOMAIN_SHADER_CORES];
 	dp->polling_ms = 100;
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
@@ -717,6 +714,12 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	if (sky1_gpu_init_perf_opp_table(kbdev, dp))
 		return -EFAULT;
 #endif
+
+	/* Use the opp level initial value instead of the real frequency
+	 * as the initial_freq for devfreq, ensuring that devfreq can
+	 * find the correct opp table during initialization.
+	 */
+	dp->initial_freq = dp->freq_table[0];
 
 #if IS_ENABLED(CONFIG_DEVFREQ_THERMAL)
 	err = kbase_ipa_init(kbdev);

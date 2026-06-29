@@ -898,16 +898,16 @@ void kbase_ipa_reset_data(struct kbase_device *kbdev)
 
 	if (elapsed_time > RESET_INTERVAL_MS) {
 		struct kbasep_pm_metrics diff;
-		struct kbase_ipa_model *model;
 
 		kbase_pm_get_dvfs_metrics(kbdev, &kbdev->ipa.last_metrics, &diff);
-
-		model = get_current_model(kbdev);
 
 		/* The counters related to sky1 power model do not
 		 * need to be reset periodically.
 		 */
 #if !IS_ENABLED(CONFIG_MALI_CIX_POWER_MODEL)
+		struct kbase_ipa_model *model;
+
+		model = get_current_model(kbdev);
 		if (model != kbdev->ipa.fallback_model)
 			model->ops->reset_counter_data(model);
 #endif

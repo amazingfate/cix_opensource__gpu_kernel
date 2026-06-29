@@ -18,7 +18,12 @@
 #
 #
 
+ifneq ($(KERNELRELEASE),)
+KERNEL_SRC ?= /lib/modules/${KERNELRELEASE}/build
+else
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
+fi
+
 KDIR ?= $(KERNEL_SRC)
 M ?= $(shell pwd)
 

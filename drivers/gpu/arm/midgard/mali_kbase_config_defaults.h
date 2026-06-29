@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *
- * (C) COPYRIGHT 2013-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2013-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -242,23 +242,23 @@ enum {
  */
 #define CSF_FIRMWARE_PING_TIMEOUT_CYCLES (600000000ull)
 
-/* Waiting timeout for a KCPU queue's fence signal blocked to long, in clock cycles.
- *
- * Based on 10s timeout at 100MHz, scaled from a 50MHz GPU system.
- */
+/* Waiting timeout for a KCPU queue's fence signal blocked too long, in milliseconds */
 #if IS_ENABLED(CONFIG_MALI_VECTOR_DUMP)
 /* Set a large value to avoid timing out while vector dumping */
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES (250000000000ull)
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES_FPGA (250000000000ull)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS (1000000)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS_FPGA (5000000)
 #else
 #ifdef USING_DOCKER_MODE
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES (20000000000ull)
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES_FPGA (50000000000ull)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS (200000)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS_FPGA (1000000)
 #else
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES (1000000000ull)
-#define KCPU_FENCE_SIGNAL_TIMEOUT_CYCLES_FPGA (2500000000ull)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS (10000)
+#define KCPU_FENCE_SIGNAL_TIMEOUT_MS_FPGA (50000)
 #endif
 #endif
+
+/* MAX allowed timeout value(ms) on host side for fence signal timeout*/
+#define MAX_FENCE_SIGNAL_TIMEOUT_MS (30000)
 
 /* Timeout for polling the GPU in clock cycles.
  *

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 #
-# (C) COPYRIGHT 2023 ARM Limited. All rights reserved.
+# (C) COPYRIGHT 2023-2025 ARM Limited. All rights reserved.
 #
 # This program is free software and is provided to you under the terms of the
 # GNU General Public License version 2 as published by the Free Software
@@ -19,45 +19,50 @@
 #
 
 load(
-    "//build/kernel/kleaf:kernel.bzl",
+    "@kleaf//build/kernel/kleaf:kernel.bzl",
+    "ddk_headers",
     "kernel_module_group",
 )
+load(":paths.bzl", "GPU_KERNEL_DRIVERS_BASE_ARM", "GPU_KERNEL_DRIVERS_GPU_ARM", "GPU_KERNEL_DRIVERS_HWTRACING_CORESIGHT_MALI", "GPU_KERNEL_CONFIG")
 
-filegroup(
-    name = "headers",
-    srcs = glob([
+package(
+    default_visibility = [
+        "//:__subpackages__",
+        "@kleaf//common:__pkg__",
+    ],
+)
+
+ddk_headers(
+    name = "kernel_headers",
+    hdrs = glob([
         "include/**/*.h",
     ]),
-    visibility = [
-        "//common:__pkg__",
-        "//common-modules/mali:__subpackages__",
+    includes = [
+        "include",
+        "include/linux",
     ],
 )
 
 filegroup(
     name = "kconfigs",
     srcs = [
-        "//common-modules/mali/drivers/base/arm:base_kconfig",
-        "//common-modules/mali/drivers/gpu/arm:gpu_kconfig",
-        "//common-modules/mali/drivers/hwtracing/coresight/mali:hwtracing_coresight_kconfig",
-        "//common-modules/mali/drivers/xen/arm:xen_kconfig",
-    ],
-    visibility = [
-        "//common:__pkg__",
-        "//common-modules/mali:__subpackages__",
-    ],
+               GPU_KERNEL_DRIVERS_BASE_ARM + ":base_kconfig",
+               GPU_KERNEL_DRIVERS_GPU_ARM + ":gpu_kconfig",
+           ] 
+           + select({
+               GPU_KERNEL_CONFIG + ":mali_coresight": [GPU_KERNEL_DRIVERS_HWTRACING_CORESIGHT_MALI + ":hwtracing_coresight_kconfig"],
+               "//conditions:default": [],
+           }),
 )
 
 kernel_module_group(
     name = "modules",
     srcs = [
-        "//common-modules/mali/drivers/base/arm:base",
-        "//common-modules/mali/drivers/gpu/arm:gpu",
-        "//common-modules/mali/drivers/hwtracing/coresight/mali:hwtracing_coresight",
-        "//common-modules/mali/drivers/xen/arm:xen",
-    ],
-    visibility = [
-        "//common:__pkg__",
-        "//common-modules/mali:__subpackages__",
-    ],
+               GPU_KERNEL_DRIVERS_BASE_ARM + ":base",
+               GPU_KERNEL_DRIVERS_GPU_ARM + ":gpu",
+           ] 
+           + select({
+               GPU_KERNEL_CONFIG + ":mali_coresight": [GPU_KERNEL_DRIVERS_HWTRACING_CORESIGHT_MALI + ":hwtracing_coresight"],
+               "//conditions:default": [],
+           }),
 )

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2015-2023 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2015-2024 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -25,28 +25,25 @@
 #include <linux/clk-provider.h>
 #include "mali_kbase_config_platform.h"
 
-#if MALI_USE_CSF
 #include <asm/arch_timer.h>
-#endif
 
 static void *enumerate_gpu_clk(struct kbase_device *kbdev, unsigned int index)
 {
 	if (index >= kbdev->nr_clocks)
 		return NULL;
 
-#if MALI_USE_CSF
 	if (of_machine_is_compatible("arm,juno"))
 		WARN_ON(kbdev->nr_clocks != 1);
-#endif
 
 	return kbdev->clocks[index];
 }
 
 static unsigned long get_gpu_clk_rate(struct kbase_device *kbdev, void *gpu_clk_handle)
 {
+	CSTD_UNUSED(kbdev);
+
 	struct clk *clk_handle;
 	unsigned long clk_rate;
-#if MALI_USE_CSF
 	/* On Juno fpga platforms, the GPU clock rate is reported as 600 MHZ at
 	 * the boot time. Then after the first call to kbase_devfreq_target()
 	 * the clock rate is reported as 450 MHZ and the frequency does not
@@ -62,7 +59,7 @@ static unsigned long get_gpu_clk_rate(struct kbase_device *kbdev, void *gpu_clk_
 	 */
 	if (of_machine_is_compatible("arm,juno"))
 		return arch_timer_get_cntfrq();
-#endif
+
 	clk_handle = (struct clk *)gpu_clk_handle;
 	if (!__clk_is_enabled(clk_handle))
 		WARN_ON(clk_prepare_enable(clk_handle));
@@ -80,6 +77,8 @@ static unsigned long get_gpu_clk_rate(struct kbase_device *kbdev, void *gpu_clk_
 static int gpu_clk_notifier_register(struct kbase_device *kbdev, void *gpu_clk_handle,
 				     struct notifier_block *nb)
 {
+	CSTD_UNUSED(kbdev);
+
 	compiletime_assert(offsetof(struct clk_notifier_data, clk) ==
 				   offsetof(struct kbase_gpu_clk_notifier_data, gpu_clk_handle),
 			   "mismatch in the offset of clk member");
@@ -89,11 +88,9 @@ static int gpu_clk_notifier_register(struct kbase_device *kbdev, void *gpu_clk_h
 			sizeof(((struct kbase_gpu_clk_notifier_data *)0)->gpu_clk_handle),
 		"mismatch in the size of clk member");
 
-#if MALI_USE_CSF
 	/* Frequency is fixed on Juno platforms */
 	if (of_machine_is_compatible("arm,juno"))
 		return 0;
-#endif
 
 	return clk_notifier_register((struct clk *)gpu_clk_handle, nb);
 }
@@ -103,10 +100,8 @@ static void gpu_clk_notifier_unregister(struct kbase_device *kbdev, void *gpu_cl
 {
 	CSTD_UNUSED(kbdev);
 
-#if MALI_USE_CSF
 	if (of_machine_is_compatible("arm,juno"))
 		return;
-#endif
 
 	clk_notifier_unregister((struct clk *)gpu_clk_handle, nb);
 }

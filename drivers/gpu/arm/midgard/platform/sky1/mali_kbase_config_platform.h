@@ -126,6 +126,7 @@ enum gpu_rcsu_hwreg {
 };
 
 #ifdef CONFIG_MALI_DEVFREQ
+
 /**
  * sky1_gpu_clk_rate_change_notifier() - Notify clock \
  *                                             rate listeners.

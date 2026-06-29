@@ -47,6 +47,7 @@ static inline struct platform_device *acpi_find_device_by_node(struct fwnode_han
 int kbase_csf_protected_memory_init(struct kbase_device *const kbdev)
 {
 	int err = 0;
+
 	struct fwnode_handle *pma_node;
 	struct platform_device *pdev;
 	struct fwnode_handle *fwnode = kbdev->dev->fwnode;
