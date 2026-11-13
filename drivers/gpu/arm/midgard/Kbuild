@@ -59,6 +59,12 @@ ifeq ($(CONFIG_FW_LOADER), n)
     $(error CONFIG_FW_LOADER must be set in Kernel configuration)
 endif
 
+ifeq ($(CONFIG_MALI_KBASE_DRM_RENDER),y)
+    ifeq ($(filter y m,$(CONFIG_DRM)),)
+        $(error CONFIG_MALI_KBASE_DRM_RENDER depends on CONFIG_DRM to be set in Kernel configuration)
+    endif
+endif
+
 ifeq ($(CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS), y)
     ifneq ($(CONFIG_DEBUG_FS), y)
         $(error CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS depends on CONFIG_DEBUG_FS to be set in Kernel configuration)
@@ -191,6 +197,9 @@ mali_kbase-$(CONFIG_SYNC_FILE) += \
     mali_kbase_fence_ops.o \
     mali_kbase_sync_file.o \
     mali_kbase_sync_common.o
+
+mali_kbase-$(CONFIG_MALI_KBASE_DRM_RENDER) += \
+    drm/mali_kbase_drm.o
 
 mali_kbase-$(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD) += \
         mali_power_gpu_work_period_trace.o \

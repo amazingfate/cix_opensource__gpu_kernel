@@ -45,6 +45,7 @@
 #if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
 #include <mali_kbase_gpu_metrics.h>
 #endif
+#include <drm/mali_kbase_drm.h>
 
 /**
  * kbase_device_firmware_hwcnt_term - Terminate CSF firmware and HWC
@@ -360,6 +361,13 @@ static const struct kbase_device_init dev_init[] = {
 	{ kbase_debug_coresight_csf_init, kbase_debug_coresight_csf_term,
 	  "Coresight initialization failed" },
 #endif /* IS_ENABLED(CONFIG_MALI_CORESIGHT) */
+#if IS_ENABLED(CONFIG_MALI_KBASE_DRM_RENDER)
+	/* Registered last so that the render node only becomes visible once the
+	 * kbase device is fully initialized.
+	 */
+	{ kbase_drm_render_init, kbase_drm_render_term,
+	  "DRM render node registration failed" },
+#endif /* IS_ENABLED(CONFIG_MALI_KBASE_DRM_RENDER) */
 };
 
 static void kbase_device_term_partial(struct kbase_device *kbdev, unsigned int i)

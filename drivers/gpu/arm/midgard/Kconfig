@@ -85,6 +85,22 @@ config MALI_CSF_SUPPORT
 	help
 	  Enables support for CSF based GPUs.
 
+config MALI_KBASE_DRM_RENDER
+	bool "Register a DRM render node for the Mali GPU"
+	depends on MALI_MIDGARD && DRM
+	default n
+	help
+	  Register the Mali GPU with the Linux DRM core as a render-node-only
+	  DRM device, so that generic user space can discover it through
+	  /sys/class/drm and /dev/dri/renderD*.
+
+	  This only provides the DRM device model: no KMS, no GEM/PRIME and no
+	  private GPU submission ioctls are exposed, and the /dev/maliX user/kernel
+	  ABI is unchanged. The render node is the parent of no display pipeline;
+	  buffer sharing still goes through dma-buf and /dev/mali0.
+
+	  If unsure, say N.
+
 config MALI_DEVFREQ
 	bool "Enable devfreq support for Mali"
 	depends on MALI_MIDGARD && PM_DEVFREQ

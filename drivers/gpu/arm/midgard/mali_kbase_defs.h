@@ -46,6 +46,7 @@
 #include <protected_mode_switcher.h>
 #include <linux/version_compat_defs.h>
 
+struct drm_device;
 
 #ifdef CONFIG_MALI_DEVFREQ
 #include <linux/devfreq.h>
@@ -1349,6 +1350,14 @@ struct kbase_device {
 	struct notifier_block pcm_prioritized_process_nb;
 
 	struct kbase_io *io;
+
+#if IS_ENABLED(CONFIG_MALI_KBASE_DRM_RENDER)
+	/**
+	 * @drm: DRM device registered for the GPU, NULL when the DRM render
+	 *       node is not registered.
+	 */
+	struct drm_device *drm;
+#endif
 };
 
 /**
