@@ -111,7 +111,10 @@ suspend)
 	# Run it detached (setsid/nohup) so an SSH drop during suspend does not
 	# kill it, and capture /dev/ttyUSB0 on the host to see where it stops.
 	# SLEEP_MODE=s2idle (default) or deep.
-	rtcwake_dev=/sys/class/rtc/rtc0/wakealarm
+	# rtc0 is the EFI RTC (rtc-efi, no usable wake alarm); rtc1 is the
+	# rx8900 I2C RTC whose alarm IRQ can wake the SoC. Override with RTC_DEV.
+	rtc_dev=${RTC_DEV:-/sys/class/rtc/rtc1}
+	rtcwake_dev=$rtc_dev/wakealarm
 	sleep_mode=${SLEEP_MODE:-s2idle}
 	{
 		echo "case: suspend"

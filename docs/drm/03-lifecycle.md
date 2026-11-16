@@ -91,7 +91,7 @@ kbase 设备引用，后者由 `kbase_drm_release()`（DRM 设备最终释放时
 | `fork` | 父进程持有 fd，子进程继承后关闭，父进程继续使用 | PASS，父进程 ioctl 正常，0 新增告警 |
 | `unbind` | 持有 fd，`echo CIXH5000:00 > .../mali/unbind` | PASS，节点消失，持有的 fd ioctl 返回 `ENODEV(19)`，close 正常，0 新增告警 |
 | `reset` | 持有 fd，`echo 1 > /sys/kernel/debug/mali0/reset` | PASS，dmesg 记录 `Preparing to soft-reset GPU` / `Reset complete`，fd ioctl 仍成功，节点仍在，0 新增告警 |
-| `suspend` | 持有 RTC 唤醒（+30s）后 `systemctl suspend`（s2idle） | **未通过/待定位**：挂起后 5 分钟内板子未恢复 SSH 与 ICMP，需要断电重启。详见 4.2 |
+| `suspend` | 持有 RTC 唤醒后 `systemctl suspend`（deep 与 s2idle 各一次） | PASS（使用 `rtc1` rx8900 alarm）：自动唤醒，节点与 `drm-info` 正常，0 新增告警；早期失败是测试脚本误用 `rtc0`（EFI RTC）所致，见 4.3 |
 
 unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`renderD128` 重新出现，
 `drm-info` 读到 `driver: mali-kbase`，dmesg 只有既有的 workqueue 告警
@@ -99,9 +99,8 @@ unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`r
 
 ## 5. 尚未完成
 
-- suspend/resume：串口日志确认挂起入口路径完整（驱动 suspend → 次核下线 → PSCI
-  `FFA_SUSPEND` 收到响应），失败在唤醒侧；需要先确认 RTC alarm 本身能否触发，
-  再带串口重跑 s2idle/deep 两种模式的唤醒测试；
+- suspend/resume：deep 与 s2idle 均已通过（rtc1 唤醒）；尚未测试"挂起时 GPU 上有
+  活跃 UMD 任务"的场景，需要真实的 Mali UMD 负载配合；
 - 初始化中途失败的故障注入（需要在每个注入点各做一次重启）；
 - unbind 后重新绑定的行为不在本阶段验证范围内（会触发已知的 re-probe 问题，
   按约定不在板子上做）；
@@ -135,8 +134,39 @@ NOTICE:  Got SUSPEND RSP, size 13
 - 设备驱动（DPU、USB、PCIe）的 suspend 回调都正常返回，kbase 也没有打印
   "Abort suspend as GPU suspension failed"；
 - 次核下线、PSCI 进入固件挂起（`FFA_SUSPEND` 收到响应）都完成；
-- 问题在 **唤醒侧**：没有 resume 输出。
+- 问题只在 **唤醒侧**。
 
-第一次尝试（s2idle + RTC +30s）同样没有恢复，说明 RTC 唤醒没有生效或固件没有恢复。
-后续排查方向：先在正常运行状态下确认 RTC alarm 能触发（不挂起），再带串口重跑
-s2idle + RTC 唤醒，观察是否需要 `FFA_RESUME` 之类的固件输出；必要时对比 deep 模式。
+### 4.3 根因：用错了 RTC
+
+板子有两个 RTC：
+
+| 设备 | 驱动 | 说明 |
+| --- | --- | --- |
+| `rtc0` | `rtc-efi` | EFI 固件 RTC，写 `wakealarm` 会成功返回，但 **不能唤醒 SoC** |
+| `rtc1` | `rtc-rx8900`（I2C） | 硬件 RTC，alarm 通过 GPIO 中断（IRQ 139，`cdns-gpio`）上报，`power/wakeup=enabled` |
+
+最初两次测试都写的是 `rtc0/wakealarm`，所以板子一直睡到手动按电源键。
+先在不挂起的状态验证 `rtc1`：arm alarm 后 `wakealarm` 被消费，IRQ 139 计数从 2 涨到 142，
+说明 rx8900 的 alarm 中断正常。随后用 `rtc1` 重跑：
+
+| 尝试 | 模式 | 唤醒源 | 结果 |
+| --- | --- | --- | --- |
+| 第三次 | deep | rtc1 +60s | **PASS**：自动唤醒，节点恢复，`drm-info` 正常，0 新增告警 |
+| 第四次 | s2idle | rtc1 +60s | **PASS**：同上 |
+
+唤醒后的补充验证：
+
+- `1000` 次循环改跑 100 次（含 resume 后）全部成功；
+- resume 后再次触发 GPU 软复位：`Resetting GPU` / `Reset complete`，节点与 fd 正常；
+- 过程中没有新的内核告警（仅启动时既有的 workqueue WARN）。
+
+观察到的两个平台现象（与本改动无关）：
+
+1. 挂起期间系统墙上时钟不前进：`date` 在 suspend 前后相同，直到 NTP 重新校时
+   （内核没有在 resume 时从 RTC 回写系统时间）；
+2. `rtc1/wakealarm` 在唤醒后仍显示原值（rx8900 驱动不自动清除），测试脚本在每次
+   arm 前先写 0 清掉。
+
+结论：suspend/resume 在 kbase + DRM render node 场景下工作正常，之前的"挂死"是
+测试脚本用错 RTC 导致的假象；`03-lifecycle-test.sh` 的 suspend 用例已改为默认使用
+`rtc1`（可用 `RTC_DEV=` 覆盖），并在 arm 后校验 alarm 确实生效。
