@@ -57,21 +57,21 @@ devm_drm_dev_alloc()"。这里的取舍是有意的：deprecated 只影响文档
 换成 devm 版本反而无法满足 fd 生命周期要求。PR #3 会评估嵌入 `struct drm_device`
 到自带引用计数的容器中的方案。
 
-### 2.2 为什么 DRM 设备不持有 kbdev
+### 2.2 为什么 PR #2 阶段 DRM 设备不持有 kbdev
 
-`kbase_platform_device_remove()` 最后调用 `kbase_device_free()`，这是同步
-`kfree(kbdev)`，没有任何引用计数。若 DRM 设备保存 `kbdev` 指针，则 unbind 之后
-仍持有 fd 的进程一旦触发 DRM ioctl 或 `drm_release()`，就会访问已释放内存。
+`kbase_platform_device_remove()` 原本直接 `vfree(kbdev)`，没有任何引用计数。
+若 DRM 设备保存 `kbdev` 指针，则 unbind 之后仍持有 fd 的进程一旦触发 DRM ioctl
+或 `drm_release()`，就会访问已释放内存。
 
-因此本阶段的 `struct drm_device` **不引用 kbdev**：
+因此 PR #2 阶段的 `struct drm_device` **不引用 kbdev**：
 
 - 不设置 `drm->dev_private`；
 - 所有 DRM 回调都不需要 kbase 状态；
 - render node 只暴露 DRM core 的通用 ioctl。
 
-PR #4 引入 GEM 后，GEM object 需要 kbdev，届时必须在 kbase 侧为 kbdev 增加
-引用计数（或把 DRM 私有结构做成独立、自持有 kbase 引用的对象），并在 PR #3 的
-生命周期文档中给出完整引用图。
+PR #3 已经为 kbdev 引入 kref，并让 DRM 设备在注册时取得一个引用、在最终释放时归还，
+完整引用图和测试结果见 `docs/drm/03-lifecycle.md`。PR #4 的 GEM object 可以安全地
+通过 `drm->dev_private`（或每个 DRM file 的内部 kctx）访问 kbase 状态。
 
 ## 3. 初始化与回滚
 

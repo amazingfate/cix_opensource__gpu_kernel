@@ -4536,7 +4536,12 @@ static void kbase_platform_device_remove(struct platform_device *pdev)
 	if (likely(kbdev)) {
 		kbase_device_term(kbdev);
 		dev_set_drvdata(kbdev->dev, NULL);
-		kbase_device_free(kbdev);
+		/*
+		 * The memory may outlive this call if the DRM device is still
+		 * referenced by open file descriptors; it is released when the
+		 * last kbase_device_put() lands.
+		 */
+		kbase_device_put(kbdev);
 	}
 
 #if (KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE)
@@ -4598,7 +4603,7 @@ static int kbase_platform_device_probe(struct platform_device *pdev)
 			dev_err(kbdev->dev, "Device initialization failed\n");
 
 		dev_set_drvdata(kbdev->dev, NULL);
-		kbase_device_free(kbdev);
+		kbase_device_put(kbdev);
 #if (KERNEL_VERSION(5, 3, 0) <= LINUX_VERSION_CODE)
 		mutex_unlock(&kbase_probe_mutex);
 #endif

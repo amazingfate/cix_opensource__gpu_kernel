@@ -107,7 +107,25 @@ struct kbase_device *kbase_device_alloc(void);
  */
 int kbase_device_misc_init(struct kbase_device *kbdev);
 void kbase_device_misc_term(struct kbase_device *kbdev);
-void kbase_device_free(struct kbase_device *kbdev);
+
+/**
+ * kbase_device_get() - Take a reference on a kbase device
+ * @kbdev: Pointer to the kbase device
+ *
+ * Objects that may outlive the platform device (for example the DRM device
+ * registered by the render node support) must hold a reference and drop it
+ * with kbase_device_put(). kbase_device_term() has already been called by
+ * the time the last reference is released.
+ */
+void kbase_device_get(struct kbase_device *kbdev);
+
+/**
+ * kbase_device_put() - Drop a reference on a kbase device
+ * @kbdev: Pointer to the kbase device
+ *
+ * Releases the kbase device memory when the last reference is dropped.
+ */
+void kbase_device_put(struct kbase_device *kbdev);
 int kbase_device_has_feature(struct kbase_device *kbdev, u32 feature);
 
 /* Needed for gator integration and for reporting vsync information */

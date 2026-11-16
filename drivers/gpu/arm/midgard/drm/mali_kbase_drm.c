@@ -73,6 +73,23 @@ static const struct file_operations kbase_drm_fops = {
 	.llseek = noop_llseek,
 };
 
+/*
+ * Called when the last reference to the DRM device is dropped, which can
+ * happen after the platform device has been removed if file descriptors were
+ * still open. The kbase device reference taken at registration time is
+ * released here, so the kbase device memory is only freed once nobody can
+ * reach it through the render node any more.
+ */
+static void kbase_drm_release(struct drm_device *drm)
+{
+	struct kbase_device *kbdev = drm->dev_private;
+
+	drm->dev_private = NULL;
+
+	if (kbdev)
+		kbase_device_put(kbdev);
+}
+
 static const struct drm_driver kbase_drm_driver = {
 	.driver_features = DRIVER_RENDER,
 	.name = "mali-kbase",
@@ -84,6 +101,7 @@ static const struct drm_driver kbase_drm_driver = {
 	.major = 1,
 	.minor = 0,
 	.fops = &kbase_drm_fops,
+	.release = kbase_drm_release,
 };
 
 int kbase_drm_render_init(struct kbase_device *kbdev)
@@ -103,8 +121,17 @@ int kbase_drm_render_init(struct kbase_device *kbdev)
 	if (IS_ERR(drm))
 		return PTR_ERR(drm);
 
+	/*
+	 * The DRM device can outlive the platform device while file
+	 * descriptors are open, so it owns a reference on the kbase device.
+	 * kbase_drm_release() drops it when the DRM device is finally freed.
+	 */
+	drm->dev_private = kbdev;
+	kbase_device_get(kbdev);
+
 	err = drm_dev_register(drm, 0);
 	if (err) {
+		/* Drops the kbase device reference through kbase_drm_release(). */
 		drm_dev_put(drm);
 		return err;
 	}
@@ -130,7 +157,9 @@ void kbase_drm_render_term(struct kbase_device *kbdev)
 	 * Unplug rather than plain unregister: file descriptors opened before
 	 * the device is torn down keep working on the DRM object (which is
 	 * reference counted) but any further DRM ioctl returns -ENODEV, so an
-	 * fd can never reach the kbase device after kbase_device_free().
+	 * fd can never reach the kbase device after kbase_device_term(). The
+	 * kbase device reference is dropped by kbase_drm_release() when the
+	 * last DRM reference goes away.
 	 */
 	drm_dev_unplug(drm);
 	drm_dev_put(drm);

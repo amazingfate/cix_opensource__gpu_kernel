@@ -7,12 +7,15 @@ CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -O2 -Wall -Wextra -Wno-unused-parameter
 LDFLAGS ?=
 
-all: drm-info
+all: drm-info drm-hold
 
 drm-info: drm-info.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
+drm-hold: drm-hold.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
 clean:
-	$(RM) drm-info
+	$(RM) drm-info drm-hold
 
 .PHONY: all clean

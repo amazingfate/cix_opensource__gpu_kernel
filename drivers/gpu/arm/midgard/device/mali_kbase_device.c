@@ -90,7 +90,12 @@ MODULE_PARM_DESC(mma_wa_id, "PBHA ID for MMA workaround. Valid range is from 1 t
 
 struct kbase_device *kbase_device_alloc(void)
 {
-	return vzalloc(sizeof(struct kbase_device));
+	struct kbase_device *kbdev = vzalloc(sizeof(*kbdev));
+
+	if (kbdev)
+		kref_init(&kbdev->refcount);
+
+	return kbdev;
 }
 
 /**
@@ -394,9 +399,21 @@ void kbase_device_misc_term(struct kbase_device *kbdev)
 #endif
 }
 
-void kbase_device_free(struct kbase_device *kbdev)
+static void kbase_device_release(struct kref *ref)
 {
+	struct kbase_device *kbdev = container_of(ref, struct kbase_device, refcount);
+
 	vfree(kbdev);
+}
+
+void kbase_device_get(struct kbase_device *kbdev)
+{
+	kref_get(&kbdev->refcount);
+}
+
+void kbase_device_put(struct kbase_device *kbdev)
+{
+	kref_put(&kbdev->refcount, kbase_device_release);
 }
 
 void kbase_device_id_init(struct kbase_device *kbdev)

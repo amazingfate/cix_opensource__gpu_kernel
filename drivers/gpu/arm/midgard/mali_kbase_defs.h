@@ -64,6 +64,7 @@ struct drm_device;
 #include <linux/sizes.h>
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/kref.h>
 #include <linux/regulator/consumer.h>
 
 /** Number of milliseconds before we time out on a GPU soft/hard reset */
@@ -1351,6 +1352,14 @@ struct kbase_device {
 	struct notifier_block pcm_prioritized_process_nb;
 
 	struct kbase_io *io;
+
+	/**
+	 * @refcount: Reference count of this structure. The platform device
+	 *            owns one reference; objects that may outlive it (the DRM
+	 *            device) take their own. The memory is released when the
+	 *            last reference is dropped, after kbase_device_term().
+	 */
+	struct kref refcount;
 
 #if IS_ENABLED(CONFIG_MALI_KBASE_DRM_RENDER)
 	/**
