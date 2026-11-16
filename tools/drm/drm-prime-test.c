@@ -6,7 +6,13 @@
  * DRM_IOCTL_PRIME_FD_TO_HANDLE / DRM_IOCTL_GEM_CLOSE on the given node, once
  * or in a loop. It also checks that the export direction is refused.
  *
- * Usage: drm-prime-test <node> [loops]
+ * Usage: drm-prime-test <node> [loops] [--hold-ms N]
+ *
+ * With --hold-ms the buffer is imported once, the handle is kept open for N
+ * milliseconds (so a test can unbind the device underneath it) and then
+ * GEM_CLOSE is attempted. The exit code is 0 unless something unexpectedly
+ * succeeded or failed to open. The package calls this from the lifecycle
+ * tests.
  *
  * (C) COPYRIGHT 2025 CIX Technology Group Co., Ltd.
  */
@@ -31,11 +37,17 @@ int main(int argc, char **argv)
 {
 	const char *node = argc > 1 ? argv[1] : "/dev/dri/renderD128";
 	int loops = argc > 2 ? atoi(argv[2]) : 1;
+	unsigned int hold_ms = 0;
 	struct dma_heap_allocation_data data;
 	int heap_fd, dmabuf_fd, drm_fd;
 	struct drm_prime_handle export;
 	int imported = 0, failed = 0;
 	int i;
+
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--hold-ms") && i + 1 < argc)
+			hold_ms = (unsigned int)atoi(argv[++i]);
+	}
 
 	heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
 	if (heap_fd < 0) {
@@ -61,6 +73,33 @@ int main(int argc, char **argv)
 
 	printf("dma-buf fd=%d size=%u, node=%s, loops=%d\n", dmabuf_fd,
 	       (unsigned int)BUFFER_SIZE, node, loops);
+
+	if (hold_ms) {
+		struct drm_prime_handle prime;
+		struct drm_gem_close close_arg;
+
+		memset(&prime, 0, sizeof(prime));
+		prime.fd = dmabuf_fd;
+		prime.flags = DRM_CLOEXEC;
+		if (ioctl(drm_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime) < 0) {
+			fprintf(stderr, "FD_TO_HANDLE failed: %s\n", strerror(errno));
+			return 1;
+		}
+		printf("imported handle=%u, holding %u ms\n", prime.handle, hold_ms);
+		usleep(hold_ms * 1000);
+
+		memset(&close_arg, 0, sizeof(close_arg));
+		close_arg.handle = prime.handle;
+		if (ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &close_arg) < 0)
+			printf("GEM_CLOSE refused: %s (expected after unbind)\n",
+			       strerror(errno));
+		else
+			printf("GEM_CLOSE ok\n");
+		close(drm_fd);
+		close(dmabuf_fd);
+		close(heap_fd);
+		return 0;
+	}
 
 	for (i = 0; i < loops; i++) {
 		struct drm_prime_handle prime;

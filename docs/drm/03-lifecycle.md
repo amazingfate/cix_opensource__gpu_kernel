@@ -190,3 +190,14 @@ mali CIXH5000:00: Device initialization failed
 - 恢复真实模块并重启后，`renderD128`、`/dev/mali0`、`drm-info` 全部恢复正常。
 
 这验证了 PR #2 要求 10/11：注册失败不会留下半初始化设备，回滚路径覆盖 DRM 项。
+
+### 4.5 补充：加载过固件后的 unbind
+
+PR #3 的 unbind 用例是在 CSF 固件从未加载的情况下做的（当时 render node 没有使用
+GPU 的路径）。PR #4 的导入路径会调用 `kbase_device_firmware_init_once()`，一旦固件
+加载过，运行中 unbind 时 `kbase_csf_firmware_unload_term()` 会释放固件内存池页面并
+触发 `BUG: Bad page state ... nonzero private`（约 35 条）。
+
+该问题在**没有任何 DRM 参与**时也能复现：只用 `exec 3</dev/mali0` 打开/关闭
+`/dev/mali0` 触发固件加载，再 unbind 即可。因此属于 DDK 在 7.3 上的既有缺陷，
+与本项目的 DRM/GEM 代码无关，详见 `docs/drm/04-gem-prime.md` 8.1。

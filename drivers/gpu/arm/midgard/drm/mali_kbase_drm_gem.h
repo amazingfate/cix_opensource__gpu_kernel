@@ -42,6 +42,7 @@ struct kbase_drm_device {
 	struct kbase_device *kbdev;
 	struct kbase_context *import_ctx;
 	struct mutex import_lock;
+	struct list_head gem_list;
 };
 
 /**
@@ -54,9 +55,11 @@ struct kbase_drm_device {
  */
 struct kbase_drm_gem_object {
 	struct drm_gem_object base;
+	struct kbase_drm_device *priv;
 	struct kbase_context *kctx;
 	struct kbase_va_region *reg;
 	u64 va_pages;
+	struct list_head link;
 };
 
 extern const struct drm_gem_object_funcs kbase_drm_gem_funcs;
@@ -82,6 +85,17 @@ struct kbase_context *kbase_drm_import_context_get(struct kbase_drm_device *priv
  * reference the context any more.
  */
 void kbase_drm_import_context_term(struct kbase_drm_device *priv);
+
+/**
+ * kbase_drm_gem_term() - Release all imported buffers and the import context
+ * @priv: Render node private data
+ *
+ * Called while the kbase device is still fully alive (before the rest of
+ * kbase_device_term runs) and again when the DRM device is released. Buffers
+ * whose file descriptors are still open keep their GEM object but lose the
+ * kbase region; their free callback then only releases the wrapper.
+ */
+void kbase_drm_gem_term(struct kbase_drm_device *priv);
 
 /**
  * kbase_drm_gem_prime_import() - Import a dma-buf as a GEM object

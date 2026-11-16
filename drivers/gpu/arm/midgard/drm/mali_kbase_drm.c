@@ -91,10 +91,12 @@ static void kbase_drm_release(struct drm_device *drm)
 		return;
 
 	/*
-	 * Every GEM object and therefore every imported region has been
-	 * released by the time the last DRM reference goes away.
+	 * Normally a no-op here: the import context and every region were
+	 * already released by kbase_drm_render_term() while the kbase device
+	 * was still alive. It also covers the path where release happens
+	 * without a preceding unplug.
 	 */
-	kbase_drm_import_context_term(priv);
+	kbase_drm_gem_term(priv);
 
 	mutex_destroy(&priv->import_lock);
 	kbase_device_put(priv->kbdev);
@@ -131,6 +133,7 @@ int kbase_drm_render_init(struct kbase_device *kbdev)
 
 	priv->kbdev = kbdev;
 	mutex_init(&priv->import_lock);
+	INIT_LIST_HEAD(&priv->gem_list);
 
 	/*
 	 * drm_dev_alloc() takes a reference on the parent device, so the
@@ -186,5 +189,14 @@ void kbase_drm_render_term(struct kbase_device *kbdev)
 	 * last DRM reference goes away.
 	 */
 	drm_dev_unplug(drm);
+
+	/*
+	 * Tear the imported buffers down while kbase is still fully alive:
+	 * leaving the import context in place would make the later stages of
+	 * kbase_device_term() run with a live context (timeline, memory and
+	 * misc teardown all warn about that).
+	 */
+	kbase_drm_gem_term(drm->dev_private);
+
 	drm_dev_put(drm);
 }

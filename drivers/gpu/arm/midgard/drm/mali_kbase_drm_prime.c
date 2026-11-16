@@ -62,12 +62,14 @@ struct drm_gem_object *kbase_drm_gem_prime_import(struct drm_device *dev, struct
 	if (err)
 		goto err_free_obj;
 
+	obj->priv = priv;
 	obj->base.funcs = &kbase_drm_gem_funcs;
 
 	mutex_lock(&priv->import_lock);
+
 	obj->kctx = kbase_drm_import_context_get(priv);
-	mutex_unlock(&priv->import_lock);
 	if (!obj->kctx) {
+		mutex_unlock(&priv->import_lock);
 		dev_err(dev->dev, "failed to create the dma-buf import context\n");
 		err = -ENOMEM;
 		goto err_release_obj;
@@ -80,6 +82,7 @@ struct drm_gem_object *kbase_drm_gem_prime_import(struct drm_device *dev, struct
 	get_dma_buf(dma_buf);
 	reg = kbase_mem_import_dma_buf(obj->kctx, dma_buf, &va_pages, &flags, 0, true);
 	if (!reg) {
+		mutex_unlock(&priv->import_lock);
 		dev_err(dev->dev, "failed to import the dma-buf through the UMM path\n");
 		err = -ENODEV;
 		goto err_release_obj;
@@ -98,8 +101,12 @@ struct drm_gem_object *kbase_drm_gem_prime_import(struct drm_device *dev, struct
 		kbase_free_alloced_region(obj->reg);
 		kbase_gpu_vm_unlock_with_pmode_sync(obj->kctx);
 		obj->reg = NULL;
+		mutex_unlock(&priv->import_lock);
 		goto err_release_obj;
 	}
+
+	list_add_tail(&obj->link, &priv->gem_list);
+	mutex_unlock(&priv->import_lock);
 
 	return &obj->base;
 

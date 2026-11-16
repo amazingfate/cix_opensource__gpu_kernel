@@ -231,3 +231,48 @@ drm_file ──handle──> kbase_drm_gem ──> kbase_va_region ──> dma_b
 
 下一步：板子恢复后重跑 `drm-prime-test`，按诊断信息修正 UMM 导入路径，再跑完整
 测试矩阵（重复导入、循环、unbind、suspend、负向用例）。
+
+## 8. 板端测试结果（2026-11-16，7.3.1-edge-cixdev）
+
+实现经过三轮板端修正后通过：
+
+1. **内部上下文必须兼容模式**：64-bit context 在用户发起 JIT 之前没有
+   `CUSTOM_VA` 区，`kbase_ctx_alloc_free_region(CUSTOM_VA_ZONE)` 会失败
+   （`failed to allocate a region in zone 1`）。导入上下文改为
+   `kbase_create_context(kbdev, is_compat=true, ...)`，从创建起就有
+   `CUSTOM_VA` 区，导入即可立即映射；
+2. **必须先加载 CSF 固件**：见 2.1；
+3. **卸载顺序**：导入上下文如果留到 `kbase_device_term()` 之后才销毁，
+   timeline/memory/misc 的 term 会检测到仍然存活的 context 并告警。现在
+   `kbase_drm_render_term()` 在 `drm_dev_unplug()` 之后立即调用
+   `kbase_drm_gem_term()`：先释放所有 GEM 对象的 region，再销毁导入上下文，
+   然后才继续 kbase 的其余 term。仍持有 fd 的 GEM 对象只保留 wrapper，
+   其 free 回调不再访问 kbase。
+
+测试结果：
+
+| 用例 | 结果 |
+| --- | --- |
+| 单次导入 + `GEM_CLOSE` | PASS（`imported=1 failed=0`） |
+| 1000 次导入/关闭循环 | PASS（`imported=1000 failed=0`，耗时约 40 ms） |
+| 8 进程并发，各 50 次 | PASS（8 × `imported=50 failed=0`） |
+| 持有 GEM handle 时 unbind | PASS：`GEM_CLOSE` 返回 `ENODEV`，节点消失，**0 条 WARNING** |
+| `PRIME_HANDLE_TO_FD` 导出 | 按预期拒绝（未实现 export） |
+
+### 8.1 已知的既有问题：加载过固件后 unbind 会报 Bad page state
+
+板端 unbind 用例中，只要 CSF 固件被加载过（`/dev/mali0` 被 open 过，或 render
+node 做过一次导入），unbind 时 `kbase_csf_firmware_unload_term()` 释放固件内存池
+页面会触发约 35 条：
+
+```
+BUG: Bad page state in process sh  pfn:...
+page dumped because: nonzero private
+__free_pages -> example_mgm_free_page -> kbase_mem_pool_free_page
+ -> kbase_csf_firmware_unload_term -> kbase_device_term
+```
+
+在**完全没有 DRM 参与**的情况下（只 `exec 3</dev/mali0` 打开再关闭，然后 unbind）
+可以同样复现，因此这是 DDK 在 7.3 上的既有问题，与 GEM/PRIME 代码无关，
+需要单独作为驱动兼容性缺陷跟踪。它不影响正常的重启/关机路径，只影响运行中的
+platform unbind。

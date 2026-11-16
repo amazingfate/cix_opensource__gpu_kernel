@@ -44,13 +44,17 @@
 static void kbase_drm_gem_free(struct drm_gem_object *gem_obj)
 {
 	struct kbase_drm_gem_object *obj = to_kbase_drm_gem(gem_obj);
+	struct kbase_drm_device *priv = obj->priv;
 
+	mutex_lock(&priv->import_lock);
 	if (obj->reg) {
 		kbase_gpu_vm_lock_with_pmode_sync(obj->kctx);
 		kbase_mem_free_region(obj->kctx, obj->reg);
 		kbase_gpu_vm_unlock_with_pmode_sync(obj->kctx);
 		obj->reg = NULL;
 	}
+	list_del(&obj->link);
+	mutex_unlock(&priv->import_lock);
 
 	obj->kctx = NULL;
 	kfree(obj);
@@ -76,13 +80,43 @@ struct kbase_context *kbase_drm_import_context_get(struct kbase_drm_device *priv
 			return NULL;
 
 		/*
+		 * A 64-bit context has no CUSTOM_VA zone until user space
+		 * requests a JIT region, and the SAME_VA path would hand back a
+		 * cookie that only an mmap() can resolve. The render node maps
+		 * imports immediately, so use a compatibility-mode context,
+		 * which owns a CUSTOM_VA zone from creation time. No user
+		 * pointers are involved, so the compat flag is harmless here.
+		 *
 		 * The api_version only gates MEM_QUERY flags, which an internal
-		 * import-only context never queries, so 0 is safe here.
+		 * import-only context never queries, so 0 is safe.
 		 */
-		priv->import_ctx = kbase_create_context(priv->kbdev, false, 0, 0, NULL);
+		priv->import_ctx = kbase_create_context(priv->kbdev, true, 0, 0, NULL);
 	}
 
 	return priv->import_ctx;
+}
+
+void kbase_drm_gem_term(struct kbase_drm_device *priv)
+{
+	struct kbase_drm_gem_object *obj;
+
+	if (!priv)
+		return;
+
+	mutex_lock(&priv->import_lock);
+
+	list_for_each_entry(obj, &priv->gem_list, link) {
+		if (!obj->reg)
+			continue;
+
+		kbase_gpu_vm_lock_with_pmode_sync(obj->kctx);
+		kbase_mem_free_region(obj->kctx, obj->reg);
+		kbase_gpu_vm_unlock_with_pmode_sync(obj->kctx);
+		obj->reg = NULL;
+	}
+
+	kbase_drm_import_context_term(priv);
+	mutex_unlock(&priv->import_lock);
 }
 
 void kbase_drm_import_context_term(struct kbase_drm_device *priv)
