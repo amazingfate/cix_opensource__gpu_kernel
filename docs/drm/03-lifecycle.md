@@ -92,6 +92,7 @@ kbase 设备引用，后者由 `kbase_drm_release()`（DRM 设备最终释放时
 | `unbind` | 持有 fd，`echo CIXH5000:00 > .../mali/unbind` | PASS，节点消失，持有的 fd ioctl 返回 `ENODEV(19)`，close 正常，0 新增告警 |
 | `reset` | 持有 fd，`echo 1 > /sys/kernel/debug/mali0/reset` | PASS，dmesg 记录 `Preparing to soft-reset GPU` / `Reset complete`，fd ioctl 仍成功，节点仍在，0 新增告警 |
 | `suspend` | 持有 RTC 唤醒后 `systemctl suspend`（deep 与 s2idle 各一次） | PASS（使用 `rtc1` rx8900 alarm）：自动唤醒，节点与 `drm-info` 正常，0 新增告警；早期失败是测试脚本误用 `rtc0`（EFI RTC）所致，见 4.3 |
+| `init-fail` | 注入 `kbase_drm_render_init()` 返回 `-ENODEV` | PASS：逆序回滚完整，`/dev/mali0` 与 DRM 节点均不存在，恢复后一切正常，见 4.4 |
 
 unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`renderD128` 重新出现，
 `drm-info` 读到 `driver: mali-kbase`，dmesg 只有既有的 workqueue 告警
@@ -170,3 +171,22 @@ NOTICE:  Got SUSPEND RSP, size 13
 结论：suspend/resume 在 kbase + DRM render node 场景下工作正常，之前的"挂死"是
 测试脚本用错 RTC 导致的假象；`03-lifecycle-test.sh` 的 suspend 用例已改为默认使用
 `rtc1`（可用 `RTC_DEV=` 覆盖），并在 arm 后校验 alarm 确实生效。
+
+### 4.4 初始化失败回滚（故障注入）
+
+在板端构建树里临时让 `kbase_drm_render_init()` 直接返回 `-ENODEV`（仅测试用，
+不提交），安装并重启，验证 `dev_init[]` 的逆序回滚：
+
+```
+mali CIXH5000:00: DRM render node registration failed error = -19
+mali CIXH5000:00: sky1_gpu_detach_pd
+mali CIXH5000:00: Device initialization failed
+```
+
+结果：
+
+- `/dev/mali0` 不存在，`/dev/dri` 下没有新的 render/primary 节点（没有半初始化设备）；
+- 电源域已 detach，probe 返回失败；
+- 恢复真实模块并重启后，`renderD128`、`/dev/mali0`、`drm-info` 全部恢复正常。
+
+这验证了 PR #2 要求 10/11：注册失败不会留下半初始化设备，回滚路径覆盖 DRM 项。
