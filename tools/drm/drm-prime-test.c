@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,7 @@ int main(int argc, char **argv)
 	const char *node = argc > 1 ? argv[1] : "/dev/dri/renderD128";
 	int loops = argc > 2 ? atoi(argv[2]) : 1;
 	unsigned int hold_ms = 0;
+	int handles = 1;
 	struct dma_heap_allocation_data data;
 	int heap_fd, dmabuf_fd, drm_fd;
 	struct drm_prime_handle export;
@@ -47,6 +49,8 @@ int main(int argc, char **argv)
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--hold-ms") && i + 1 < argc)
 			hold_ms = (unsigned int)atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--handles") && i + 1 < argc)
+			handles = atoi(argv[++i]);
 	}
 
 	heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
@@ -75,26 +79,55 @@ int main(int argc, char **argv)
 	       (unsigned int)BUFFER_SIZE, node, loops);
 
 	if (hold_ms) {
-		struct drm_prime_handle prime;
+		unsigned int handle[16];
 		struct drm_gem_close close_arg;
+		int n;
 
-		memset(&prime, 0, sizeof(prime));
-		prime.fd = dmabuf_fd;
-		prime.flags = DRM_CLOEXEC;
-		if (ioctl(drm_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime) < 0) {
-			fprintf(stderr, "FD_TO_HANDLE failed: %s\n", strerror(errno));
-			return 1;
+		if (handles < 1)
+			handles = 1;
+		if (handles > (int)(sizeof(handle) / sizeof(handle[0])))
+			handles = (int)(sizeof(handle) / sizeof(handle[0]));
+
+		for (n = 0; n < handles; n++) {
+			struct drm_prime_handle prime;
+
+			memset(&prime, 0, sizeof(prime));
+			prime.fd = dmabuf_fd;
+			prime.flags = DRM_CLOEXEC;
+			if (ioctl(drm_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime) < 0) {
+				fprintf(stderr, "FD_TO_HANDLE #%d failed: %s\n", n,
+					strerror(errno));
+				return 1;
+			}
+			handle[n] = prime.handle;
 		}
-		printf("imported handle=%u, holding %u ms\n", prime.handle, hold_ms);
+		printf("imported %d handle(s) from the same dma-buf, holding %u ms\n",
+		       handles, hold_ms);
 		usleep(hold_ms * 1000);
 
-		memset(&close_arg, 0, sizeof(close_arg));
-		close_arg.handle = prime.handle;
-		if (ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &close_arg) < 0)
-			printf("GEM_CLOSE refused: %s (expected after unbind)\n",
-			       strerror(errno));
-		else
-			printf("GEM_CLOSE ok\n");
+		/*
+		 * The DRM core deduplicates imports of the same dma-buf within
+		 * one file, so repeated imports can legitimately return the same
+		 * handle. Close each distinct handle once.
+		 */
+		for (n = 0; n < handles; n++) {
+			int m;
+			bool seen = false;
+
+			for (m = 0; m < n; m++)
+				if (handle[m] == handle[n])
+					seen = true;
+			if (seen)
+				continue;
+
+			memset(&close_arg, 0, sizeof(close_arg));
+			close_arg.handle = handle[n];
+			if (ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &close_arg) < 0)
+				printf("GEM_CLOSE(%u) refused: %s\n", handle[n],
+				       strerror(errno));
+		}
+		printf("closed %d distinct handle(s), first handle=%u\n", handles,
+		       handle[0]);
 		close(drm_fd);
 		close(dmabuf_fd);
 		close(heap_fd);
