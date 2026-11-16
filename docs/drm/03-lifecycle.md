@@ -90,6 +90,8 @@ kbase 设备引用，后者由 `kbase_drm_release()`（DRM 设备最终释放时
 | `multi` | 16 个进程同时打开并各执行一次 ioctl | PASS，16 次 ioctl 成功，0 新增告警 |
 | `fork` | 父进程持有 fd，子进程继承后关闭，父进程继续使用 | PASS，父进程 ioctl 正常，0 新增告警 |
 | `unbind` | 持有 fd，`echo CIXH5000:00 > .../mali/unbind` | PASS，节点消失，持有的 fd ioctl 返回 `ENODEV(19)`，close 正常，0 新增告警 |
+| `reset` | 持有 fd，`echo 1 > /sys/kernel/debug/mali0/reset` | PASS，dmesg 记录 `Preparing to soft-reset GPU` / `Reset complete`，fd ioctl 仍成功，节点仍在，0 新增告警 |
+| `suspend` | 持有 RTC 唤醒（+30s）后 `systemctl suspend`（s2idle） | **未通过/待定位**：挂起后 5 分钟内板子未恢复 SSH 与 ICMP，需要断电重启。可能是 resume 失败，也可能是 resume 后 WiFi 未重新关联；需要串口日志区分 |
 
 unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`renderD128` 重新出现，
 `drm-info` 读到 `driver: mali-kbase`，dmesg 只有既有的 workqueue 告警
@@ -97,7 +99,8 @@ unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`r
 
 ## 5. 尚未完成
 
-- suspend/resume 与 GPU reset 用例；
+- suspend/resume：板端第一次尝试即失联（见 4.1），需要串口日志确认是 resume 失败还是
+  resume 后无线网络未恢复；在定位前不再做挂起测试，避免反复断电；
 - 初始化中途失败的故障注入（需要在每个注入点各做一次重启）；
 - unbind 后重新绑定的行为不在本阶段验证范围内（会触发已知的 re-probe 问题，
   按约定不在板子上做）；

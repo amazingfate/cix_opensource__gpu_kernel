@@ -13,6 +13,9 @@
 #   unbind       hold an fd, unbind the platform device, expect ENODEV on the
 #                held fd; MUST be the only unbind in this boot and should be
 #                followed by a reboot
+#   reset        hold an fd, trigger a GPU reset through the mali debugfs
+#                "reset" file, check the fd and the node still work
+#   suspend      arm the RTC, suspend to RAM, verify the node after resume
 #
 # Every case records dmesg before/after and fails if a new WARNING/BUG/oops
 # appears.  The board is expected to be back in its normal state (mali_kbase
@@ -88,6 +91,42 @@ unbind)
 	# The held fd must see ENODEV (19) on its ioctl, and close cleanly.
 	grep -q "ioctl=errno:19" "$OUT/result.txt" || rc=1
 	[ -c "$NODE" ] && rc=1
+	;;
+reset)
+	"$SCRIPT_DIR/drm-hold" "$NODE" 8000 >"$OUT/result.txt" 2>&1 &
+	hold_pid=$!
+	sleep 2
+	echo 1 > /sys/kernel/debug/mali0/reset
+	wait "$hold_pid"
+	{
+		echo "case: reset"
+		echo "node present after reset: $([ -c "$NODE" ] && echo yes || echo no)"
+	} >>"$OUT/result.txt"
+	grep -q "ioctl=ok" "$OUT/result.txt" || rc=1
+	[ -c "$NODE" ] || rc=1
+	;;
+suspend)
+	# Arm the RTC as a wake source, then suspend-to-idle. The script continues
+	# after resume; if the board does not come back it needs a power cycle.
+	# Run it detached (setsid/nohup) so an SSH drop during suspend does not
+	# kill it, then poll for resume.
+	rtcwake_dev=/sys/class/rtc/rtc0/wakealarm
+	{
+		echo "case: suspend"
+		echo "mem_sleep was: $(cat /sys/power/mem_sleep)"
+	} >"$OUT/result.txt"
+	echo s2idle > /sys/power/mem_sleep
+	echo 0 > "$rtcwake_dev"
+	echo +30 > "$rtcwake_dev"
+	echo "rtc wakealarm: $(cat "$rtcwake_dev")" >>"$OUT/result.txt"
+	echo "suspending at: $(date -Is)" >>"$OUT/result.txt"
+	sync
+	systemctl suspend
+	echo "resumed at: $(date -Is)" >>"$OUT/result.txt"
+	echo "node present after resume: $([ -c "$NODE" ] && echo yes || echo no)" >>"$OUT/result.txt"
+	"$SCRIPT_DIR/drm-info" "$NODE" >>"$OUT/result.txt" 2>&1 || rc=1
+	[ -c "$NODE" ] || rc=1
+	echo deep > /sys/power/mem_sleep
 	;;
 *)
 	echo "unknown case: $CASE" >&2
