@@ -117,6 +117,30 @@ static inline void kbase_timer_setup(struct timer_list *timer,
 #endif
 }
 
+/*
+ * Use timer_delete() / timer_delete_sync() as the canonical names.
+ *
+ * - Upstream introduced timer_delete{,_sync}() in 6.2.
+ * - Upstream removed del_timer{,_sync}() in 6.10 (8fa7292fee5c, 9b13df3fb64e).
+ * - Some vendor kernels (e.g. cix 6.12) keep del_timer{,_sync}() as compat
+ *   inlines past 6.10, so we must NOT redefine del_timer here for >= 6.10 —
+ *   that would conflict with the kernel's own static inline.
+ *
+ * For < 6.2 kernels (no timer_delete yet) provide a shim mapping the new
+ * names to the old ones. All driver code should call timer_delete{,_sync}().
+ */
+#if KERNEL_VERSION(6, 2, 0) > LINUX_VERSION_CODE
+static inline int timer_delete(struct timer_list *timer)
+{
+	return del_timer(timer);
+}
+
+static inline int timer_delete_sync(struct timer_list *timer)
+{
+	return del_timer_sync(timer);
+}
+#endif
+
 #ifndef WRITE_ONCE
 #ifdef ASSIGN_ONCE
 #define WRITE_ONCE(x, val) ASSIGN_ONCE(val, x)
@@ -642,7 +666,9 @@ static inline unsigned long
 kbase_mm_get_unmapped_area_helper(struct mm_struct *mm, struct file *filp, unsigned long addr,
 				  unsigned long len, unsigned long pgoff, unsigned long flags)
 {
-#if (KERNEL_VERSION(6, 10, 0) <= LINUX_VERSION_CODE)
+#if (KERNEL_VERSION(6, 19, 0) <= LINUX_VERSION_CODE)
+	return mm_get_unmapped_area(filp, addr, len, pgoff, flags);
+#elif (KERNEL_VERSION(6, 10, 0) <= LINUX_VERSION_CODE)
 	return mm_get_unmapped_area(mm, filp, addr, len, pgoff, flags);
 #else
 	return mm->get_unmapped_area(filp, addr, len, pgoff, flags);
@@ -760,5 +786,62 @@ static inline int of_changeset_add_prop_string_array(struct of_changeset *ocs,
 #ifndef DEVFREQ_GOV_PASSIVE
 #define DEVFREQ_GOV_PASSIVE "passive"
 #endif
+
+/*
+ * Kernel 6.17 removed __SetPageMovable() / __ClearPageMovable() as part of
+ * the rework that stops storing movable_operations in page->mapping (upstream
+ * commit 84caf98838a3 "mm: stop storing migration_ops in page->mapping").
+ *
+ * The replacement set_movable_ops() API only accepts PGTY_offline and
+ * PGTY_zsmalloc page types, so generic driver-owned pages (which the Mali
+ * driver relies on) can no longer be made movable through this interface.
+ *
+ * Provide no-op stubs so the driver still compiles on >= 6.17. Page migration
+ * of GPU pages is effectively disabled on these kernels, while the driver's
+ * own metadata-based tracking continues to work.
+ */
+#if (KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE)
+#include <linux/migrate.h>
+static inline void __SetPageMovable(struct page *page, const struct movable_operations *ops)
+{
+	CSTD_UNUSED(page);
+	CSTD_UNUSED(ops);
+}
+
+static inline void __ClearPageMovable(struct page *page)
+{
+	CSTD_UNUSED(page);
+}
+#endif /* KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE */
+
+/*
+ * Kernel 7.0 changed shmem_file_setup()'s @flags parameter from
+ * unsigned long to vma_flags_t (upstream commit 590d356aa433
+ * "mm: update shmem_[kernel]_file_*() functions to use vma_flags_t"),
+ * so VM_NORESERVE (still unsigned long) is no longer assignable.
+ *
+ * Provide a single token that resolves to the correct type per kernel.
+ */
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#define KBASE_VM_NORESERVE_FLAGS mk_vma_flags(VMA_NORESERVE_BIT)
+#else
+#define KBASE_VM_NORESERVE_FLAGS VM_NORESERVE
+#endif
+
+/*
+ * Kernel 7.0 changed dma_fence_signal() / dma_fence_signal_locked() to
+ * return void (upstream commit 88e721ab978a "dma-buf/dma-fence: Remove
+ * return code of signaling-functions"). The driver still wants an int
+ * return value to detect the "already signalled" case on older kernels.
+ */
+static inline int kbase_dma_fence_signal_helper(struct dma_fence *fence)
+{
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+	dma_fence_signal(fence);
+	return 0;
+#else
+	return dma_fence_signal(fence);
+#endif
+}
 
 #endif /* _VERSION_COMPAT_DEFS_H_ */

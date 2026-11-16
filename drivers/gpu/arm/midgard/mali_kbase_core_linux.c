@@ -4441,11 +4441,13 @@ static ssize_t enable_sky1_power_model_store(struct device *dev, struct device_a
 
 	if (val == 1 && !enable_sky1_power_model) {
 		enable_sky1_power_model = true;
-		hrtimer_start(&kbdev->sky1_power_timer,
+		if (kbdev->sky1_power_timer_initialized)
+			hrtimer_start(&kbdev->sky1_power_timer,
 				HR_TIMER_DELAY_MSEC(PM_POWER_MODEL_SAMPLE_INTERVAL_MS), HRTIMER_MODE_REL);
 	} else if (val == 0 && enable_sky1_power_model) {
 		enable_sky1_power_model = false;
-		hrtimer_cancel(&kbdev->sky1_power_timer);
+		if (kbdev->sky1_power_timer_initialized)
+			hrtimer_cancel(&kbdev->sky1_power_timer);
 		/* Clear the power data in the shared address */
 		mali_writel(0, kbdev->dynamic_power_addr);
 	}

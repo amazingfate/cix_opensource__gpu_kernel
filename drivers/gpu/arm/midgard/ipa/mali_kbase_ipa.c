@@ -852,7 +852,7 @@ int kbase_get_real_power(struct devfreq *df, u32 *power, unsigned long freq, uns
 	mutex_unlock(&kbdev->ipa.lock);
 
 #if IS_ENABLED(CONFIG_MALI_CIX_POWER_MODEL)
-	if(enable_sky1_power_model && kbdev->sky1_power_timer.function) {
+	if (enable_sky1_power_model && kbdev->sky1_power_timer_initialized) {
 		u32 normalized_utilisation = get_normalized_gpu_usage(kbdev);
 
 		if(normalized_utilisation < GPU_POWER_MODEL_ENABLE_THRESHOLD) {

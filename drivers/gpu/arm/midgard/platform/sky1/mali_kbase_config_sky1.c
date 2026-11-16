@@ -310,8 +310,14 @@ static int kbase_platform_sky1_late_init(struct kbase_device *kbdev)
 
 	INIT_WORK(&kbdev->sky1_power_work, sky1_power_model_work_handler);
 
+#if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE
+	hrtimer_setup(&kbdev->sky1_power_timer, sky1_power_timer_callback, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
+#else
 	hrtimer_init(&kbdev->sky1_power_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	kbdev->sky1_power_timer.function = sky1_power_timer_callback;
+#endif
+	kbdev->sky1_power_timer_initialized = true;
 
 	if(enable_sky1_power_model) {
 		hrtimer_start(&kbdev->sky1_power_timer,
@@ -323,6 +329,7 @@ static int kbase_platform_sky1_late_init(struct kbase_device *kbdev)
 
 static void kbase_platform_sky1_late_term(struct kbase_device *kbdev)
 {
+	kbdev->sky1_power_timer_initialized = false;
 	hrtimer_cancel(&kbdev->sky1_power_timer);
 	if (kbdev->sky1_power_wq)
 		destroy_workqueue(kbdev->sky1_power_wq);

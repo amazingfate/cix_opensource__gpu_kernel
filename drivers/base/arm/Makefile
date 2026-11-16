@@ -88,12 +88,17 @@ MAKE_ARGS := $(foreach config,$(CONFIGS), \
                         $(value config)=n))
 
 #
-# EXTRA_CFLAGS to define the custom CONFIGs on out-of-tree build
+# MALI_KCFLAGS to define the custom CONFIGs on out-of-tree build.
+# Kernel >= 6.15 removed EXTRA_CFLAGS support (commit e966ad0edd00).
+#
+# Use a separate variable so command-line KCFLAGS (e.g. from Android
+# gpu.mk: KCFLAGS="-D__ANDROID_COMMON_KERNEL__") does not override the
+# generated -DCONFIG_* flags passed to the kernel build.
 #
 # Generate the list of CONFIGs defines with values from CONFIGS.
 # $(value config) is the name of the CONFIG option.
 # When set to y or m, the CONFIG gets defined to 1.
-EXTRA_CFLAGS := $(foreach config,$(CONFIGS), \
+MALI_KCFLAGS := $(foreach config,$(CONFIGS), \
                     $(if $(filter y m,$(value $(value config))), \
                         -D$(value config)=1))
 
@@ -102,13 +107,13 @@ CFLAGS_MODULE += -Wall -Werror
 ifeq ($(CONFIG_GCOV_KERNEL), y)
     CFLAGS_MODULE += $(call cc-option, -ftest-coverage)
     CFLAGS_MODULE += $(call cc-option, -fprofile-arcs)
-    EXTRA_CFLAGS += -DGCOV_PROFILE=1
+    MALI_KCFLAGS += -DGCOV_PROFILE=1
 endif
 
 ifeq ($(CONFIG_MALI_KCOV),y)
     CFLAGS_MODULE += $(call cc-option, -fsanitize-coverage=trace-cmp)
-    EXTRA_CFLAGS += -DKCOV=1
-    EXTRA_CFLAGS += -DKCOV_ENABLE_COMPARISONS=1
+    MALI_KCFLAGS += -DKCOV=1
+    MALI_KCFLAGS += -DKCOV_ENABLE_COMPARISONS=1
 endif
 
 # The following were added to align with W=1 in scripts/Makefile.extrawarn
@@ -156,7 +161,7 @@ KBUILD_CPPFLAGS += -DKBUILD_EXTRA_WARN2
 CFLAGS_MODULE += -Wno-ignored-qualifiers
 
 all:
-	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
+	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) KCFLAGS="$(MALI_KCFLAGS) $(KCFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
 
 modules_install:
 	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) modules_install

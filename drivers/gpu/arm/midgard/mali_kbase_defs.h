@@ -1079,6 +1079,7 @@ struct kbase_device {
 	void __iomem *clk_response_addr;
 	void __iomem *dynamic_power_addr;
 	struct hrtimer sky1_power_timer;
+	bool sky1_power_timer_initialized;
 	struct workqueue_struct *sky1_power_wq;
 	struct work_struct sky1_power_work;
 #if IS_ENABLED(CONFIG_PLAT_DSM_SYSEVENT)
