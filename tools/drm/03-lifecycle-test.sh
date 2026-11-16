@@ -106,23 +106,32 @@ reset)
 	[ -c "$NODE" ] || rc=1
 	;;
 suspend)
-	# Arm the RTC as a wake source, then suspend-to-idle. The script continues
-	# after resume; if the board does not come back it needs a power cycle.
+	# Arm the RTC as a wake source, then suspend. The script continues after
+	# resume; if the board does not come back it needs a power cycle.
 	# Run it detached (setsid/nohup) so an SSH drop during suspend does not
-	# kill it, then poll for resume.
+	# kill it, and capture /dev/ttyUSB0 on the host to see where it stops.
+	# SLEEP_MODE=s2idle (default) or deep.
 	rtcwake_dev=/sys/class/rtc/rtc0/wakealarm
+	sleep_mode=${SLEEP_MODE:-s2idle}
 	{
 		echo "case: suspend"
 		echo "mem_sleep was: $(cat /sys/power/mem_sleep)"
+		echo "requested sleep mode: $sleep_mode"
 	} >"$OUT/result.txt"
-	echo s2idle > /sys/power/mem_sleep
+	echo "$sleep_mode" > /sys/power/mem_sleep
 	echo 0 > "$rtcwake_dev"
-	echo +30 > "$rtcwake_dev"
-	echo "rtc wakealarm: $(cat "$rtcwake_dev")" >>"$OUT/result.txt"
+	echo +60 > "$rtcwake_dev"
+	wakealarm=$(cat "$rtcwake_dev")
+	echo "rtc wakealarm: $wakealarm" >>"$OUT/result.txt"
+	if [ -z "$wakealarm" ] || [ "$wakealarm" = "0" ]; then
+		echo "FAIL: RTC wakealarm could not be armed" >>"$OUT/result.txt"
+		exit 1
+	fi
 	echo "suspending at: $(date -Is)" >>"$OUT/result.txt"
 	sync
 	systemctl suspend
 	echo "resumed at: $(date -Is)" >>"$OUT/result.txt"
+	echo "rtc wakealarm after resume: $(cat "$rtcwake_dev")" >>"$OUT/result.txt"
 	echo "node present after resume: $([ -c "$NODE" ] && echo yes || echo no)" >>"$OUT/result.txt"
 	"$SCRIPT_DIR/drm-info" "$NODE" >>"$OUT/result.txt" 2>&1 || rc=1
 	[ -c "$NODE" ] || rc=1

@@ -91,7 +91,7 @@ kbase 设备引用，后者由 `kbase_drm_release()`（DRM 设备最终释放时
 | `fork` | 父进程持有 fd，子进程继承后关闭，父进程继续使用 | PASS，父进程 ioctl 正常，0 新增告警 |
 | `unbind` | 持有 fd，`echo CIXH5000:00 > .../mali/unbind` | PASS，节点消失，持有的 fd ioctl 返回 `ENODEV(19)`，close 正常，0 新增告警 |
 | `reset` | 持有 fd，`echo 1 > /sys/kernel/debug/mali0/reset` | PASS，dmesg 记录 `Preparing to soft-reset GPU` / `Reset complete`，fd ioctl 仍成功，节点仍在，0 新增告警 |
-| `suspend` | 持有 RTC 唤醒（+30s）后 `systemctl suspend`（s2idle） | **未通过/待定位**：挂起后 5 分钟内板子未恢复 SSH 与 ICMP，需要断电重启。可能是 resume 失败，也可能是 resume 后 WiFi 未重新关联；需要串口日志区分 |
+| `suspend` | 持有 RTC 唤醒（+30s）后 `systemctl suspend`（s2idle） | **未通过/待定位**：挂起后 5 分钟内板子未恢复 SSH 与 ICMP，需要断电重启。详见 4.2 |
 
 unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`renderD128` 重新出现，
 `drm-info` 读到 `driver: mali-kbase`，dmesg 只有既有的 workqueue 告警
@@ -99,9 +99,44 @@ unbind 之后重启，系统恢复正常：mali_kbase 由 udev 自动加载，`r
 
 ## 5. 尚未完成
 
-- suspend/resume：板端第一次尝试即失联（见 4.1），需要串口日志确认是 resume 失败还是
-  resume 后无线网络未恢复；在定位前不再做挂起测试，避免反复断电；
+- suspend/resume：串口日志确认挂起入口路径完整（驱动 suspend → 次核下线 → PSCI
+  `FFA_SUSPEND` 收到响应），失败在唤醒侧；需要先确认 RTC alarm 本身能否触发，
+  再带串口重跑 s2idle/deep 两种模式的唤醒测试；
 - 初始化中途失败的故障注入（需要在每个注入点各做一次重启）；
 - unbind 后重新绑定的行为不在本阶段验证范围内（会触发已知的 re-probe 问题，
   按约定不在板子上做）；
 - 内核无 KASAN 构建，UAF 只能靠 refcount/警告和 `unbind` 用例间接覆盖。
+
+### 4.2 suspend 串口日志（2026-11-16）
+
+板子的串口在 `/dev/ttyUSB0`（115200），主机侧抓到的第二次挂起（`PM: suspend entry (deep)`）
+日志显示内核挂起路径是完整的：
+
+```
+[  163.750789] PM: suspend entry (deep)
+[  163.875677] Freezing user space processes
+[  163.875677] Freezing user space processes completed (elapsed 0.007 seconds)
+[  163.883508] Freezing remaining freezable tasks
+[  163.884792] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+...
+[  164.075281] linlondp CIXH5010:00: linlondp_pm_suspend
+[  164.244857] cdns-usbssp ... enter D3 succeed
+[  164.576281] sky1-pcie-cix sky1-pcie.2.auto: sky1_pcie_suspend_noirq
+[  164.639128] Disabling non-boot CPUs ...
+[  164.644687] psci: CPU11 killed (polled 0 ms)
+...
+NOTICE:  Send CMD: FFA_SUSPEND
+NOTICE:  Send CMD: 0x82000007
+NOTICE:  Got SUSPEND RSP, size 13
+```
+
+随后串口静默。也就是说：
+
+- 设备驱动（DPU、USB、PCIe）的 suspend 回调都正常返回，kbase 也没有打印
+  "Abort suspend as GPU suspension failed"；
+- 次核下线、PSCI 进入固件挂起（`FFA_SUSPEND` 收到响应）都完成；
+- 问题在 **唤醒侧**：没有 resume 输出。
+
+第一次尝试（s2idle + RTC +30s）同样没有恢复，说明 RTC 唤醒没有生效或固件没有恢复。
+后续排查方向：先在正常运行状态下确认 RTC alarm 能触发（不挂起），再带串口重跑
+s2idle + RTC 唤醒，观察是否需要 `FFA_RESUME` 之类的固件输出；必要时对比 deep 模式。
