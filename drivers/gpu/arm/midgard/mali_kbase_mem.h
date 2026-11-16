@@ -1573,6 +1573,27 @@ void kbase_sync_single(struct kbase_context *kctx, struct tagged_addr cpu_pa,
 /* OS specific functions */
 int kbase_mem_free(struct kbase_context *kctx, u64 gpu_addr);
 int kbase_mem_free_region(struct kbase_context *kctx, struct kbase_va_region *reg);
+
+/**
+ * kbase_mem_import_dma_buf - Import a dma-buf into a kernel base context
+ *
+ * @kctx:          The kbase context to import the buffer into
+ * @dma_buf:       The dma-buf to import; the reference is consumed
+ * @va_pages:      Output: number of virtual pages of the region
+ * @flags:         Memory flags, updated with the import properties
+ * @padding:       Read-only padding pages appended to the GPU mapping
+ * @kernel_import: Allocated from the CUSTOM_VA zone and mapped immediately
+ *
+ * Used by the DRM render node to import external buffers through the same UMM
+ * path as the /dev/mali0 import ioctl. On success the region owns the dma-buf
+ * reference; on failure the reference is released.
+ *
+ * Return: the new region, or NULL on error.
+ */
+struct kbase_va_region *kbase_mem_import_dma_buf(struct kbase_context *kctx,
+						 struct dma_buf *dma_buf, u64 *va_pages,
+						 base_mem_alloc_flags *flags, u32 padding,
+						 bool kernel_import);
 void kbase_os_mem_map_lock(struct kbase_context *kctx);
 void kbase_os_mem_map_unlock(struct kbase_context *kctx);
 

@@ -94,10 +94,12 @@ config MALI_KBASE_DRM_RENDER
 	  DRM device, so that generic user space can discover it through
 	  /sys/class/drm and /dev/dri/renderD*.
 
-	  This only provides the DRM device model: no KMS, no GEM/PRIME and no
-	  private GPU submission ioctls are exposed, and the /dev/maliX user/kernel
-	  ABI is unchanged. The render node is the parent of no display pipeline;
-	  buffer sharing still goes through dma-buf and /dev/mali0.
+	  This only provides the DRM device model and GEM/PRIME import: no KMS,
+	  no buffer allocation or export and no private GPU submission ioctls
+	  are exposed, and the /dev/maliX user/kernel ABI is unchanged. The
+	  render node is the parent of no display pipeline; imported dma-bufs
+	  are mapped through the kbase UMM path and job submission still goes
+	  through /dev/mali0.
 
 	  If unsure, say N.
 

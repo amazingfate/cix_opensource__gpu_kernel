@@ -199,7 +199,9 @@ mali_kbase-$(CONFIG_SYNC_FILE) += \
     mali_kbase_sync_common.o
 
 mali_kbase-$(CONFIG_MALI_KBASE_DRM_RENDER) += \
-    drm/mali_kbase_drm.o
+    drm/mali_kbase_drm.o \
+    drm/mali_kbase_drm_gem.o \
+    drm/mali_kbase_drm_prime.o
 
 mali_kbase-$(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD) += \
         mali_power_gpu_work_period_trace.o \

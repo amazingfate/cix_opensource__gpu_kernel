@@ -48,11 +48,12 @@
 #include <mali_kbase_defs.h>
 
 #include "mali_kbase_drm.h"
+#include "mali_kbase_drm_gem.h"
 
 /*
- * The render node exposes the DRM core ioctls (VERSION, GET_CAP, ...) only.
- * Without DRIVER_GEM the PRIME and GEM ioctls are rejected by the DRM core
- * itself with -EOPNOTSUPP/-ENODEV, and no mmap() is provided.
+ * The render node exposes the DRM core ioctls (VERSION, GET_CAP, ...) and the
+ * GEM/PRIME import ioctls. Export, dumb buffers and mmap are not implemented,
+ * so the DRM core rejects them.
  */
 static const struct file_operations kbase_drm_fops = {
 	.owner = THIS_MODULE,
@@ -82,16 +83,26 @@ static const struct file_operations kbase_drm_fops = {
  */
 static void kbase_drm_release(struct drm_device *drm)
 {
-	struct kbase_device *kbdev = drm->dev_private;
+	struct kbase_drm_device *priv = drm->dev_private;
 
 	drm->dev_private = NULL;
 
-	if (kbdev)
-		kbase_device_put(kbdev);
+	if (!priv)
+		return;
+
+	/*
+	 * Every GEM object and therefore every imported region has been
+	 * released by the time the last DRM reference goes away.
+	 */
+	kbase_drm_import_context_term(priv);
+
+	mutex_destroy(&priv->import_lock);
+	kbase_device_put(priv->kbdev);
+	kfree(priv);
 }
 
 static const struct drm_driver kbase_drm_driver = {
-	.driver_features = DRIVER_RENDER,
+	.driver_features = DRIVER_RENDER | DRIVER_GEM,
 	.name = "mali-kbase",
 	.desc = "ARM Mali GPU (kbase)",
 #if (KERNEL_VERSION(6, 18, 0) > LINUX_VERSION_CODE)
@@ -102,15 +113,24 @@ static const struct drm_driver kbase_drm_driver = {
 	.minor = 0,
 	.fops = &kbase_drm_fops,
 	.release = kbase_drm_release,
+	.gem_prime_import = kbase_drm_gem_prime_import,
 };
 
 int kbase_drm_render_init(struct kbase_device *kbdev)
 {
+	struct kbase_drm_device *priv;
 	struct drm_device *drm;
 	int err;
 
 	if (WARN_ON(kbdev->drm))
 		return -EEXIST;
+
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->kbdev = kbdev;
+	mutex_init(&priv->import_lock);
 
 	/*
 	 * drm_dev_alloc() takes a reference on the parent device, so the
@@ -118,15 +138,19 @@ int kbase_drm_render_init(struct kbase_device *kbdev)
 	 * at different times.
 	 */
 	drm = drm_dev_alloc(&kbase_drm_driver, kbdev->dev);
-	if (IS_ERR(drm))
-		return PTR_ERR(drm);
+	if (IS_ERR(drm)) {
+		err = PTR_ERR(drm);
+		mutex_destroy(&priv->import_lock);
+		kfree(priv);
+		return err;
+	}
 
 	/*
 	 * The DRM device can outlive the platform device while file
 	 * descriptors are open, so it owns a reference on the kbase device.
 	 * kbase_drm_release() drops it when the DRM device is finally freed.
 	 */
-	drm->dev_private = kbdev;
+	drm->dev_private = priv;
 	kbase_device_get(kbdev);
 
 	err = drm_dev_register(drm, 0);

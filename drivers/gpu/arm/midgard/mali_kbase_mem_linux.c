@@ -1416,51 +1416,61 @@ static int get_umm_memory_group_id(struct kbase_context *kctx, struct dma_buf *d
 }
 
 /**
- * kbase_mem_from_umm - Import dma-buf memory into kctx
+ * kbase_mem_import_dma_buf - Import a dma-buf into a kernel base context
  * @kctx: Pointer to kbase context to import memory into
- * @fd: File descriptor of dma-buf to import
+ * @dma_buf: dma-buf to import. The reference is consumed by this function.
  * @va_pages: Pointer where virtual size of the region will be output
  * @flags: Pointer to memory flags
  * @padding: Number of read only padding pages to be inserted at the end of the
  * GPU mapping of the dma-buf
+ * @kernel_import: true when the import is issued by the kernel on behalf of a
+ *                 DRM context rather than by a 64-bit user space client. In
+ *                 that case the region is allocated in the CUSTOM_VA zone so
+ *                 that it can be mapped immediately, instead of being returned
+ *                 to user space as a cookie that expects an mmap().
  *
  * Return: Pointer to new kbase_va_region object of the imported dma-buf, or
- * NULL on error.
+ * NULL on error. On error the dma-buf reference is released.
  *
  * This function imports a dma-buf into kctx, and created a kbase_va_region
  * object that wraps the dma-buf.
  */
-static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx, int fd, u64 *va_pages,
-						  base_mem_alloc_flags *flags, u32 padding)
+struct kbase_va_region *kbase_mem_import_dma_buf(struct kbase_context *kctx,
+						 struct dma_buf *dma_buf, u64 *va_pages,
+						 base_mem_alloc_flags *flags, u32 padding,
+						 bool kernel_import)
 {
 	struct kbase_va_region *reg;
-	struct dma_buf *dma_buf;
 	struct dma_buf_attachment *dma_attachment;
 	enum kbase_memory_zone zone;
 	bool shared_zone = false;
 	bool need_sync = false;
 	int group_id;
 
-	dma_buf = dma_buf_get(fd);
-	if (IS_ERR_OR_NULL(dma_buf))
-		return NULL;
-
 	dma_attachment = dma_buf_attach(dma_buf, kctx->kbdev->dev);
 	if (IS_ERR_OR_NULL(dma_attachment)) {
+		dev_err(kctx->kbdev->dev, "%s: dma_buf_attach failed (%ld)\n", __func__,
+			PTR_ERR(dma_attachment));
 		dma_buf_put(dma_buf);
 		return NULL;
 	}
 
 	*va_pages = (PAGE_ALIGN(dma_buf->size) >> PAGE_SHIFT) + (u64)padding;
-	if (!*va_pages)
+	if (!*va_pages) {
+		dev_err(kctx->kbdev->dev, "%s: dma-buf size %zu is invalid\n", __func__,
+			dma_buf->size);
 		goto dma_buf_exit;
+	}
 
 	/* 64-bit address range is the max */
 	if (*va_pages > (U64_MAX / PAGE_SIZE))
 		goto dma_buf_exit;
 
-	if (!kbase_import_size_is_valid(kctx->kbdev, *va_pages))
+	if (!kbase_import_size_is_valid(kctx->kbdev, *va_pages)) {
+		dev_err(kctx->kbdev->dev, "%s: import of %llu pages is too large\n", __func__,
+			*va_pages);
 		goto dma_buf_exit;
+	}
 
 	/* ignore SAME_VA */
 	*flags &= ~BASE_MEM_SAME_VA;
@@ -1500,7 +1510,7 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx, in
 	if (*flags & BASE_MEM_IMPORT_SYNC_ON_MAP_UNMAP)
 		need_sync = true;
 
-	if (!kbase_ctx_compat_mode(kctx)) {
+	if (!kernel_import && !kbase_ctx_compat_mode(kctx)) {
 		/*
 		 * 64-bit tasks require us to reserve VA on the CPU that we use
 		 * on the GPU.
@@ -1516,19 +1526,27 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx, in
 
 	reg = kbase_ctx_alloc_free_region(kctx, zone, 0, *va_pages);
 
-	if (!reg)
+	if (!reg) {
+		dev_err(kctx->kbdev->dev, "%s: failed to allocate a region in zone %d\n",
+			__func__, zone);
 		goto dma_buf_exit;
+	}
 
 	group_id = get_umm_memory_group_id(kctx, dma_buf);
 
 	reg->gpu_alloc = kbase_alloc_create(kctx, *va_pages, KBASE_MEM_TYPE_IMPORTED_UMM, group_id);
-	if (IS_ERR_OR_NULL(reg->gpu_alloc))
+	if (IS_ERR_OR_NULL(reg->gpu_alloc)) {
+		dev_err(kctx->kbdev->dev, "%s: kbase_alloc_create failed\n", __func__);
 		goto no_alloc;
+	}
 
 	reg->cpu_alloc = kbase_mem_phy_alloc_get(reg->gpu_alloc);
 
-	if (kbase_update_region_flags(kctx, reg, *flags) != 0)
+	if (kbase_update_region_flags(kctx, reg, *flags) != 0) {
+		dev_err(kctx->kbdev->dev, "%s: invalid import flags 0x%llx\n", __func__,
+			(unsigned long long)*flags);
 		goto error_out;
+	}
 
 	/* No pages to map yet */
 	reg->gpu_alloc->nents = 0;
@@ -1580,6 +1598,33 @@ dma_buf_exit:
 	dma_buf_put(dma_buf);
 
 	return NULL;
+}
+
+/**
+ * kbase_mem_from_umm - Import dma-buf memory into kctx
+ * @kctx: Pointer to kbase context to import memory into
+ * @fd: File descriptor of dma-buf to import
+ * @va_pages: Pointer where virtual size of the region will be output
+ * @flags: Pointer to memory flags
+ * @padding: Number of read only padding pages to be inserted at the end of the
+ * GPU mapping of the dma-buf
+ *
+ * Return: Pointer to new kbase_va_region object of the imported dma-buf, or
+ * NULL on error.
+ *
+ * User space entry point of the dma-buf import: takes a reference on the file
+ * descriptor's dma-buf and hands it to kbase_mem_import_dma_buf().
+ */
+static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx, int fd, u64 *va_pages,
+						  base_mem_alloc_flags *flags, u32 padding)
+{
+	struct dma_buf *dma_buf;
+
+	dma_buf = dma_buf_get(fd);
+	if (IS_ERR_OR_NULL(dma_buf))
+		return NULL;
+
+	return kbase_mem_import_dma_buf(kctx, dma_buf, va_pages, flags, padding, false);
 }
 
 u32 kbase_get_cache_line_alignment(struct kbase_device *kbdev)

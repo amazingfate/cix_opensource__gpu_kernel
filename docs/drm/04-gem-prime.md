@@ -26,53 +26,33 @@
 
 ## 2. 关键设计
 
-### 2.1 每个 DRM 文件一个 kbase 上下文
+### 2.1 每个 DRM 设备一个导入上下文
+
+`gem_prime_import(dev, dma_buf)` 的回调签名里没有 `drm_file`，而导入又必须发生在一个
+kbase context 里。PR #4 的取舍是：**在 DRM 设备级别维护一个惰性创建的导入上下文**，
+所有 render node 客户端共享它的 GPU 地址空间：
 
 ```c
-struct kbase_drm_file {
-	struct kbase_context *kctx;
+struct kbase_drm_device {
+	struct kbase_device *kbdev;
+	struct kbase_context *import_ctx;
+	struct mutex import_lock;
 };
-
-static int kbase_drm_open(struct drm_device *dev, struct drm_file *file)
-{
-	struct kbase_device *kbdev = dev->dev_private;
-	struct kbase_drm_file *kfile;
-
-	kfile = kzalloc(sizeof(*kfile), GFP_KERNEL);
-	if (!kfile)
-		return -ENOMEM;
-
-	kfile->kctx = kbase_create_context(kbdev, false, 0,
-					   KBASE_API_VERSION(0, 0), NULL);
-	if (!kfile->kctx) {
-		kfree(kfile);
-		return -ENOMEM;
-	}
-
-	file->driver_priv = kfile;
-	return 0;
-}
-
-static void kbase_drm_postclose(struct drm_device *dev, struct drm_file *file)
-{
-	struct kbase_drm_file *kfile = file->driver_priv;
-
-	if (!kfile)
-		return;
-	kbase_destroy_context(kfile->kctx);
-	kfree(kfile);
-}
 ```
 
-- `kbase_create_context()` 在 `context/` 里是 `KBASE_EXPORT_SYMBOL`，`filp` 传 NULL
-  表示内部上下文（与 `kbase_file_create()` 的调用方式一致）；
-- `drm_driver.postclose` 在 DRM core 释放该文件的所有 GEM handle **之后**调用
-  （`drm_release()` 先 `drm_gem_release()` 再 `postclose`），因此此时该文件的
-  GEM 对象已全部释放，`kbase_destroy_context()` 不会遇到仍被引用的 region；
-- 上下文销毁由 kbase 的既有逻辑完成（MMU 地址空间、CSF 状态、debugfs 等）。
+- 第一次导入时（`kbase_drm_import_context_get()`，持 `import_lock`）创建；
+- 创建前必须先调用 `kbase_device_firmware_init_once(kbdev)`：CSF 固件和调度器
+  线程在 `/dev/maliX` 首次 open 时才加载，render node 没有这条路径。实测不调用时
+  `kbase_create_context()` 会在 `kbase_csf_scheduler_context_init()` 里
+  `WARN_ON(!kthread_running)` 并失败；
+- `kbase_create_context(kbdev, false, 0, 0, NULL)`：`filp` 为 NULL 表示内部上下文，
+  api_version 只影响 `MEM_QUERY` 的返回标志，导入路径不会查询；
+- 上下文在 `drm_driver.release`（最后一个 DRM 引用释放）时销毁，此时所有 GEM 对象
+  都已释放，不会留下仍被引用的 region。
 
-`KBASE_API_VERSION(0, 0)` 的选择需要在实现时确认：内部上下文不使用 UMD 的
-feature gating，若发现某处检查 `kctx->api_version`，改为传入当前 UK 版本。
+已知限制：所有客户端共享同一个导入地址空间；如果后续 PR #5/#6 需要按进程隔离
+（例如每个客户端独立的 GPU VA），再改为 per-file 上下文，需要在 fops 的 ioctl 路径
+上把当前 `drm_file` 与 `gem_prime_import` 关联起来。
 
 ### 2.2 GEM 对象
 
@@ -132,42 +112,40 @@ kbase_drm_gem_prime_import(struct drm_device *dev, struct dma_buf *dma_buf)
 - `drm_gem_prime_import()` 的通用实现会调用 `drm_driver.gem_prime_import`；
   我们使用自己的实现以取得文件私有的 kctx（通用实现拿不到 `drm_file`，见 2.4）。
 
-### 2.4 在 import 回调里拿到"当前文件"
+### 2.4 关于"在 import 回调里拿到当前文件"
 
-`gem_prime_import(dev, dma_buf)` 没有 `drm_file` 参数，而导入必须发生在
-**打开 render node 的那个进程**的 kbase context 里。可选方案：
+`gem_prime_import(dev, dma_buf)` 没有 `drm_file` 参数，这是本 PR 最初的主要
+不确定点。备选方案及其结论：
 
-| 方案 | 做法 | 评价 |
+| 方案 | 做法 | 结论 |
 | --- | --- | --- |
-| A（推荐） | 用 `drm_file` 的 `driver_priv` 保存全局"当前导入者" | 需要把 ioctl 路径与文件关联，实现简单但有并发歧义 |
-| B | 自定义 fops 的 `unlocked_ioctl` 包装 `drm_ioctl`，在入口设置 `current->kbase_drm_file` | 依赖线程局部状态，可重入 |
-| C | 每个 DRM 文件使用独立 `drm_device` | 不符合 DRM 模型，否决 |
+| A | 每个 DRM 设备一个共享导入上下文 | **采用**（PR #4），实现简单、无并发歧义；共享 VA 空间 |
+| B | fops ioctl 包装 + 线程局部 `kctx`，实现 per-file 上下文 | 留待需要按进程隔离时再做 |
+| C | 每个 DRM 文件一个独立 `drm_device` | 不符合 DRM 模型，否决 |
 
-实现时优先采用 B：在 `kbase_drm_ioctl()` 里从 `file->private_data` 取出
-`struct drm_file *`，通过 `drm_file` → `driver_priv` → `kctx` 设置到
-`current` 的任务局部变量；`gem_prime_import` 里读取。若实现复杂度过高，退回
-"每个 DRM 设备一个导入用 kctx"（A'），并在文档中标注这是共享地址空间的临时方案。
-
-> 这一条是本 PR 最主要的设计不确定点，实现前先在板端验证
-> `kbase_create_context(NULL filp)` + `kbase_mem_import_dma_buf()` 能正常工作。
+方案 B 若要落地，需要在 `kbase_drm_ioctl()` 里从 `filp->private_data`
+（`struct drm_file`）取出 `driver_priv`，保存到任务局部变量，供
+`gem_prime_import` 读取；这会让导入路径依赖 ioctl 的调用上下文，因此 PR #4
+先用方案 A。
 
 ## 3. 生命周期与引用
 
 新增的引用关系（在 PR #3 的基础上）：
 
 ```
-drm_file ──1:1──> kbase_drm_file ──> kbase_context ──> kbdev（弱引用，kbdev 由 drm_device 保活）
+drm_device ──> kbase_drm_device.import_ctx ──> kbase_context ──> kbdev（弱引用，kbdev 由 drm_device 保活）
 drm_file ──handle──> kbase_drm_gem ──> kbase_va_region ──> dma_buf（+attachment/sgt）
 ```
 
 顺序保证：
 
 1. `drm_release()`：先释放该文件的全部 handle → GEM free → region free →
-   `dma_buf_detach/put`；然后调用 `postclose` → `kbase_destroy_context()`；
+   `dma_buf_detach/put`；所有 fd 关闭后 `drm_driver.release` 触发
+   `kbase_destroy_context()`；
 2. 若同一 dma-buf 被另一个文件/进程重复导入，各自持有独立的 attachment 与 region，
    引用计数互不影响；
-3. `postclose` 中 `WARN_ON(!list_empty(&kctx->reg_rbtree))` 之类的自检（若代价可接受）
-   用来发现遗留 region；
+3. 如果 GEM 对象在上下文销毁后仍被引用会触发 UAF，因此上下文只在 DRM 设备最后
+   一个引用释放时销毁（此时不可能还有 GEM）；
 4. DRM 设备 unplug 时（PR #3 已实现），已有 fd 的 ioctl 返回 `-ENODEV`，
    GEM/上下文在 close 时按上述顺序回收。
 
@@ -208,14 +186,48 @@ drm_file ──handle──> kbase_drm_gem ──> kbase_va_region ──> dma_b
 
 ## 6. 风险与待验证点
 
-1. **内部上下文的可用性**：`kbase_create_context(..., filp=NULL, api_version)`
-   是否能在没有 `/dev/mali0` 文件状态机的情况下正常建 MMU/CSF 状态，
-   需先在板端用最小模块验证；
+1. **内部上下文的可用性**：已验证必须先在导入路径调用
+   `kbase_device_firmware_init_once()`；否则 `kbase_create_context()` 在
+   `kbase_csf_scheduler_context_init()` 触发 `WARN_ON(!kthread_running)` 并失败；
 2. **VA 映射**：导入时使用 `BASE_MEM_IMPORT_HAVE_PAGES` 走 `kbase_gpu_mmap()`
    需要 kctx 的地址空间就绪；若失败，退回 `BASE_MEM_NEED_MMAP` + 惰性映射；
-3. **并发导入的"当前文件"定位**（2.4），实现前先确定方案；
+3. **共享导入上下文**：所有客户端共用一个 GPU 地址空间，见 2.4；
 4. **驱动卸载**：持有 GEM 的 fd 会持有模块引用（fops->owner），卸载被阻止；
 5. **性能**：每个文件一个 kbase context 会占用 MMU 页表与 CSF 结构，
    大量短连接客户端（如反复打开 render node 的合成器）需要测量开销；
 6. **上游可接受性**：render node 只做导入、不做分配，属于最小能力集，
    便于后续与 Mesa/GBM 的真实需求对照。
+
+## 7. 当前状态（2026-11-16）
+
+已实现：
+
+- `kbase_mem_from_umm()` 重构为 `kbase_mem_import_dma_buf()`，新增
+  `kernel_import` 参数：内核导入使用 `CUSTOM_VA` 区并立即 `kbase_gpu_mmap()`，
+  用户态导入保持原有 cookie/SAME_VA 行为；
+- `drm/mali_kbase_drm_gem.{c,h}`：GEM 对象、`free` 回调、惰性导入上下文；
+- `drm/mali_kbase_drm_prime.c`：`gem_prime_import` → UMM 导入 → GPU 映射；
+- render node 声明 `DRIVER_RENDER | DRIVER_GEM`；导出、dumb、mmap 仍未实现。
+
+构建验证：
+
+| 内核 | 结果 |
+| --- | --- |
+| vanilla 6.6.89 arm64（`W=1`） | 通过 |
+| 板端 7.3.1-edge-cixdev | 通过，三个新目标文件均编译链接成功 |
+
+板端联调进展：
+
+1. 首次 `PRIME_FD_TO_HANDLE` 失败（ENODEV），dmesg 显示
+   `kbase_csf_scheduler_context_init()` 的 `WARN_ON(!kthread_running)`：
+   导入上下文创建前没有加载 CSF 固件；已改为先调用
+   `kbase_device_firmware_init_once()`，之后固件加载成功、上下文创建正常；
+2. 随后 `kbase_mem_import_dma_buf()` 返回 NULL（`failed to import the dma-buf
+   through the UMM path`）。已在该函数的各失败分支加上 `dev_err` 诊断
+   （attach 失败、大小非法、region 分配失败、`kbase_alloc_create` 失败、
+   flags 非法），等待复测定位；
+3. 诊断版本安装期间板子因 WiFi（rtw89）断连后内核无响应而失联，需要断电重启，
+   复测因此中断。
+
+下一步：板子恢复后重跑 `drm-prime-test`，按诊断信息修正 UMM 导入路径，再跑完整
+测试矩阵（重复导入、循环、unbind、suspend、负向用例）。
