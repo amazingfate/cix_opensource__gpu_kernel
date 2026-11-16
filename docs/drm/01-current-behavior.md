@@ -15,7 +15,7 @@
 | 分支 | `cix_k6.6.89_2026q2` |
 | 基线提交 | `a9c0a471d663369f0329a280a15449d2206d5e94`（CIX P1 2026Q2 RC4 RELEASE） |
 | DDK 版本 | `r54p1-11eac0`（见 `drivers/gpu/arm/midgard/Kbuild` 中的 `MALI_RELEASE_NAME`） |
-| 目标内核 | Linux 6.6.89 |
+| 目标内核 | Linux 7.3+ 主线（2026-11-16 起；6.6.89 保持可编译） |
 | 构建方式 | 外部模块（DKMS，`drivers/gpu/arm/midgard/Makefile` + `KDIR`） |
 
 kbase 在本仓库中是 **out-of-tree 模块**，并不放在内核源码树的

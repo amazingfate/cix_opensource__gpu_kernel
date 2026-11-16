@@ -284,10 +284,10 @@ unbind/卸载生命周期仍待 PR #3 的测试。
 `CIXH5000:00`，原本由 `panthor` 驱动；`linlon_dp.enable_render=0`，即 DPU 不提供
 render node；系统已安装 `cix-gpu-kmd 1.0.0` DKMS 包。
 
-由于 `cix_k6.6.89_2026q2` 分支本身无法在 7.3 上编译（`mm_get_unmapped_area()`
-原型变化，见 `include/linux/version_compat_defs.h`），板端测试用**发行包源码**
-`/usr/src/cix-gpu-kmd-1.0.0`（同一 DDK r54p1-11eac0，已包含 6.19+ 兼容修改）
-加上本 PR 的补丁构建。
+测试初期 `cix_k6.6.89_2026q2` 分支无法在 7.3 上编译（`mm_get_unmapped_area()`
+等 API 变化），当时用**发行包源码** `/usr/src/cix-gpu-kmd-1.0.0`（同一
+DDK r54p1-11eac0，已包含 6.19+ 兼容修改）加上本 PR 的补丁构建；之后该兼容层已作为
+独立的 compat 提交并入本分支（见第 11 节），分支现在可以直接在 7.3 头文件上构建。
 
 ### 10.1 已验证
 
@@ -371,3 +371,31 @@ protected/TZMP 配置处于不一致状态。这个行为在 6.6 上没有被验
 
 另有一处与 DRM 无关的既有告警：`kbase_reset_gpu_init()` 创建的 workqueue 缺少
 `WQ_UNBOUND/WQ_PERCPU`（7.3 新增检查），以及 SCMI perf domain 重复 OPP。
+
+## 11. 目标内核与兼容层（2026-11-16 更新）
+
+项目目标内核由 Linux 6.6.89 调整为 **7.3 及以后的主线内核**（6.6.89 继续保持可编译）。
+`cix_k6.6.89_2026q2` 基线分支落后于实际发行的 `cix-gpu-kmd 1.0.0` 源码包，直接构建会
+在 7.3 上失败。因此新增一个独立的 compat 提交，把发行包中纯兼容性的修改并入本分支：
+
+| 兼容点 | 内核变化 | 处理 |
+| --- | --- | --- |
+| `mm_get_unmapped_area()` 原型 | 6.19 起去掉 `mm` 参数 | 版本分支 |
+| `del_timer{,_sync}()` 删除 | 6.10 起改名 `timer_delete{,_sync}()` | 兼容 shim + 调用点替换 |
+| `hrtimer_init()` + `.function` 赋值 | 6.13 起改用 `hrtimer_setup()` | 版本分支 |
+| `dma_fence_signal()` 返回值 | 6.x 中后期改变返回类型 | `kbase_dma_fence_signal_helper()` |
+| `EXTRA_CFLAGS` 支持移除 | 6.15 起由 `KCFLAGS` 取代 | 构建脚本改用 `MALI_KCFLAGS` |
+| `VM_NORESERVE` 变成 VMA 标志位 | 新内核用 `mk_vma_flags()` | `KBASE_VM_NORESERVE_FLAGS` |
+| `__SetPageMovable()` / `__ClearPageMovable()` 移除 | 6.17 起页面迁移接口重写 | no-op shim |
+| `dma_fence_ops.fence_value_str` 移除 | 6.16 起 | 版本保护 |
+| sky1 power timer 生命周期 | 定时器可能未初始化 | 新增 `sky1_power_timer_initialized` 标志 |
+
+验证：
+
+- vanilla Linux 6.6.89 arm64：`W=1` 全量编译通过；
+- 目标板 Linux 7.3.1（`debian-o6`）：直接用本分支源码 + 该板内核头文件编译通过
+  （`make ... all` 0 error），不再需要借用发行包源码；
+- 该 compat 提交不包含任何 DRM 功能代码，与本项目功能提交分开评审。
+
+板端调试纪律：不再用 `rmmod`/`insmod` 切换驱动版本，一律"安装模块 + 重启"；
+每次启动最多做一次平台 unbind，测完重启（原因见 10.4 的 IDM secure access 事件）。
